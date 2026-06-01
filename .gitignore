@@ -1,0 +1,9 @@
+.env
+icloud-session/
+__pycache__/
+*.pyc
+.venv/
+.uv/
+dist/
+*.egg-info/
+.pytest_cache/
