@@ -29,6 +29,24 @@ class Config:
     scan_day_of_week: str = os.getenv("SCAN_DAY_OF_WEEK", "sunday")
     scan_time: str = os.getenv("SCAN_TIME", "02:00")
 
+    # Scoring weights (must sum to 100)
+    weight_age: int = int(os.getenv("WEIGHT_AGE", "35"))
+    weight_size: int = int(os.getenv("WEIGHT_SIZE", "20"))
+    weight_source: int = int(os.getenv("WEIGHT_SOURCE", "30"))
+    weight_duplicate: int = int(os.getenv("WEIGHT_DUPLICATE", "15"))
+
+    # Score thresholds
+    # Assets scoring >= auto_offload_threshold AND not favourite are offloaded automatically
+    auto_offload_threshold: int = int(os.getenv("AUTO_OFFLOAD_THRESHOLD", "65"))
+    # Assets scoring >= review_threshold are sent for manual approval
+    review_threshold: int = int(os.getenv("REVIEW_THRESHOLD", "40"))
+
+    # Favourite assets are never auto-offloaded regardless of score
+    favorite_score_penalty: int = int(os.getenv("FAVORITE_SCORE_PENALTY", "60"))
+
+    # Size threshold above which an asset gets the full size score (MB)
+    large_file_mb: int = int(os.getenv("LARGE_FILE_MB", "50"))
+
     def validate(self) -> None:
         required = {
             "ICLOUD_USERNAME": self.icloud_username,
