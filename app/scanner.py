@@ -6,6 +6,7 @@ from pyicloud import PyiCloudService
 from pyicloud.exceptions import PyiCloudFailedLoginException
 
 from app.config import config
+from app.geocoder import reverse_geocode
 from app.models import Asset, MediaType, Source
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,17 @@ class ICloudScanner:
         is_favorite = _extract_is_favorite(photo)
         media_type = _map_media_type(getattr(photo, "item_type", ""))
         created = _normalise_datetime(photo.created)
+        added_date = _normalise_datetime_optional(getattr(photo, "added_date", None))
+
+        lat = _get_field(photo, "locationLatitude")
+        lon = _get_field(photo, "locationLongitude")
+        location = reverse_geocode(
+            float(lat) if lat is not None else None,
+            float(lon) if lon is not None else None,
+        )
+
+        duration_raw = _get_field(photo, "duration")
+        burst_id = _get_field(photo, "burstId")
 
         return Asset(
             asset_id=photo.id,
@@ -98,6 +110,15 @@ class ICloudScanner:
             is_favorite=is_favorite,
             source=source,
             albums=albums,
+            added_date=added_date,
+            dimensions=getattr(photo, "dimensions", None),
+            duration=float(duration_raw) if duration_raw is not None else None,
+            is_burst=burst_id is not None,
+            is_burst_key=bool(_get_field(photo, "isKeyAsset")),
+            is_hidden=bool(_get_field(photo, "isHidden")),
+            has_edits=bool(_get_field(photo, "adjustmentType")),
+            asset_subtype=_get_field(photo, "assetSubtype"),
+            location=location,
         )
 
 
@@ -123,6 +144,16 @@ def _extract_is_favorite(photo) -> bool:
         return False
 
 
+def _get_field(photo, field_name: str):
+    """Read a raw CloudKit field, checking master record then asset record."""
+    for rec_attr in ("_master_record", "_asset_record"):
+        try:
+            return getattr(photo, rec_attr)["fields"][field_name]["value"]
+        except (AttributeError, KeyError, TypeError):
+            continue
+    return None
+
+
 def _map_media_type(item_type: str) -> MediaType:
     mapping = {"image": MediaType.IMAGE, "movie": MediaType.VIDEO}
     return mapping.get(item_type.lower(), MediaType.UNKNOWN)
@@ -131,6 +162,14 @@ def _map_media_type(item_type: str) -> MediaType:
 def _normalise_datetime(dt: datetime | None) -> datetime:
     if dt is None:
         return datetime.now(tz=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _normalise_datetime_optional(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt

@@ -26,6 +26,17 @@ class Asset:
     source: Source
     albums: list[str] = field(default_factory=list)
 
+    # Extended metadata
+    added_date: datetime | None = None        # when the asset was added to the library
+    dimensions: tuple[int, int] | None = None  # (width, height) pixels
+    duration: float | None = None             # seconds; videos only
+    is_burst: bool = False                    # part of a burst sequence
+    is_burst_key: bool = False                # the kept frame in a burst
+    is_hidden: bool = False                   # hidden in the library
+    has_edits: bool = False                   # edits/adjustments applied
+    asset_subtype: int | None = None          # raw API subtype flag (screenshots, panoramas, etc.)
+    location: str | None = None               # reverse-geocoded city or county
+
     @property
     def size_mb(self) -> float:
         return self.size / (1024 * 1024)

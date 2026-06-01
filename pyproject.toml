@@ -9,6 +9,7 @@ dependencies = [
     "apscheduler==3.10.4",
     "pysmb==1.2.9.1",
     "python-dotenv==1.0.1",
+    "geopy>=2.4.0",
 ]
 
 [project.optional-dependencies]
