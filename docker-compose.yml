@@ -1,0 +1,17 @@
+services:
+  icloud-manager:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - smb-storage:${SMB_MOUNT_PATH:-/mnt/storage}
+      # pyicloud stores session/cookie files to avoid repeated 2FA prompts
+      - ./icloud-session:/root/.pyicloud
+
+volumes:
+  smb-storage:
+    driver: local
+    driver_opts:
+      type: cifs
+      o: "username=${SMB_USERNAME},password=${SMB_PASSWORD},uid=1000,gid=1000"
+      device: //${SMB_HOST}/${SMB_SHARE}

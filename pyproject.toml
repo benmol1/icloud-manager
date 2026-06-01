@@ -1,0 +1,26 @@
+[project]
+name = "icloud-manager"
+version = "0.1.0"
+description = "Periodic iCloud storage scanner with Telegram notifications and SMB offload"
+requires-python = ">=3.12"
+dependencies = [
+    "pyicloud==1.0.0",
+    "python-telegram-bot==21.6",
+    "apscheduler==3.10.4",
+    "pysmb==1.2.9.1",
+    "python-dotenv==1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pytest-asyncio==0.24.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
