@@ -29,6 +29,12 @@ class Config:
 
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
     min_age_days: int = int(os.getenv("MIN_AGE_DAYS", "180"))
+
+    # Optional capture-date window (inclusive, ISO YYYY-MM-DD) to limit a scan —
+    # handy for testing against a small slice (e.g. SCAN_SINCE=2020-01-01
+    # SCAN_UNTIL=2020-12-31). Empty = no limit.
+    scan_since: str = os.getenv("SCAN_SINCE", "")
+    scan_until: str = os.getenv("SCAN_UNTIL", "")
     scan_day_of_week: str = os.getenv("SCAN_DAY_OF_WEEK", "sunday")
     scan_time: str = os.getenv("SCAN_TIME", "02:00")
 

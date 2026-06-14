@@ -57,6 +57,33 @@ class TestUpsert:
     def test_empty_upsert_is_noop(self, index):
         assert index.upsert_scored([]) == 0
 
+    def test_rich_metadata_persisted(self, index):
+        asset = Asset(
+            asset_id="r1",
+            filename="IMG.HEIC",
+            size=1000,
+            created=datetime(2020, 6, 1, tzinfo=timezone.utc),
+            media_type=MediaType.IMAGE,
+            is_favorite=False,
+            source=Source.PHOTOS,
+            latitude=51.5,
+            longitude=-0.1,
+            caption="Beach",
+            fingerprint="FP1",
+            change_tag="T1",
+            width=4032,
+            height=3024,
+            added=datetime(2020, 5, 1, tzinfo=timezone.utc),
+        )
+        index.upsert_scored([ScoredAsset(asset=asset, breakdown=ScoreBreakdown())])
+        row = index.get("r1")
+        assert row["latitude"] == 51.5
+        assert row["caption"] == "Beach"
+        assert row["fingerprint"] == "FP1"
+        assert row["change_tag"] == "T1"
+        assert (row["width"], row["height"]) == (4032, 3024)
+        assert row["added_at"].startswith("2020-05-01")
+
     def test_rescan_refreshes_but_preserves_first_seen(self, index):
         index.upsert_scored([_scored(score=10.0)], seen_at="2026-01-01T00:00:00+00:00")
         index.upsert_scored([_scored(score=42.0)], seen_at="2026-02-01T00:00:00+00:00")

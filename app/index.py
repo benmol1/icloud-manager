@@ -91,20 +91,40 @@ CREATE INDEX IF NOT EXISTS idx_assets_fingerprint ON assets(fingerprint);
 """
 
 # Columns set on first sight and refreshed on every scan. Deliberately excludes
-# the offload lifecycle (status/local_path/offloaded_at) and first_seen_at, so a
-# re-scan never clobbers what an offload recorded.
+# the offload lifecycle (status/local_path/offloaded_at), first_seen_at, and the
+# EXIF columns (captured at offload time), so a re-scan never clobbers them.
 _SCAN_COLUMNS = (
     "filename",
     "size_bytes",
     "media_type",
+    "file_type",
     "source",
     "albums",
     "is_favorite",
+    "is_hidden",
+    "is_live_photo",
     "is_duplicate",
+    "caption",
+    "width",
+    "height",
+    "duration",
+    "subtype",
+    "hdr_type",
+    "has_adjustments",
+    "latitude",
+    "longitude",
+    "fingerprint",
+    "change_tag",
+    "master_id",
     "captured_at",
+    "added_at",
+    "tz_offset",
     "score",
     "last_seen_at",
 )
+
+# Full column set for the INSERT (scan-provided columns + identity + first-seen).
+_INSERT_COLUMNS = ("asset_id", *_SCAN_COLUMNS, "first_seen_at")
 
 
 def _now_iso() -> str:
@@ -144,17 +164,12 @@ class AssetIndex:
         if not rows:
             return 0
 
+        columns = ", ".join(_INSERT_COLUMNS)
+        placeholders = ", ".join(f":{col}" for col in _INSERT_COLUMNS)
         update_clause = ", ".join(f"{col}=excluded.{col}" for col in _SCAN_COLUMNS)
         sql = f"""
-            INSERT INTO assets (
-                asset_id, filename, size_bytes, media_type, source, albums,
-                is_favorite, is_duplicate, captured_at, score,
-                first_seen_at, last_seen_at
-            ) VALUES (
-                :asset_id, :filename, :size_bytes, :media_type, :source, :albums,
-                :is_favorite, :is_duplicate, :captured_at, :score,
-                :first_seen_at, :last_seen_at
-            )
+            INSERT INTO assets ({columns})
+            VALUES ({placeholders})
             ON CONFLICT(asset_id) DO UPDATE SET {update_clause}
         """
         with self._conn:
@@ -258,11 +273,28 @@ class AssetIndex:
             "filename": asset.filename,
             "size_bytes": asset.size,
             "media_type": asset.media_type.value,
+            "file_type": asset.file_type,
             "source": asset.source.value,
             "albums": json.dumps(asset.albums),
             "is_favorite": int(asset.is_favorite),
+            "is_hidden": int(asset.is_hidden),
+            "is_live_photo": int(asset.is_live_photo),
             "is_duplicate": int(item.is_duplicate),
+            "caption": asset.caption,
+            "width": asset.width,
+            "height": asset.height,
+            "duration": asset.duration,
+            "subtype": asset.subtype,
+            "hdr_type": asset.hdr_type,
+            "has_adjustments": int(asset.has_adjustments),
+            "latitude": asset.latitude,
+            "longitude": asset.longitude,
+            "fingerprint": asset.fingerprint,
+            "change_tag": asset.change_tag,
+            "master_id": asset.master_id,
             "captured_at": asset.created.isoformat(),
+            "added_at": asset.added.isoformat() if asset.added else None,
+            "tz_offset": asset.tz_offset,
             "score": item.score,
             "first_seen_at": seen_at,
             "last_seen_at": seen_at,

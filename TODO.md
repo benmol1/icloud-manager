@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-14 12:51*
+*Last updated: 2026-06-14 13:00*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -40,7 +40,8 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 *Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time.*
 - [ ] Add per-album / interim progress logging during the album membership index build, so the terminal shows progress instead of going silent for minutes (currently only logs "Building…" then nothing until "Scanning…")
 - [ ] Cache the album membership index so subsequent runs are incremental updates rather than two full paginated sweeps every run
-- [ ] Use `recordChangeTag` (the asset etag) for incremental scans — skip re-processing assets whose stored `change_tag` is unchanged. Same scan-cache effort as the album-index cache above; depends on the asset index storing `change_tag`
+- [ ] Use `recordChangeTag` (the asset etag) for incremental scans — skip re-processing assets whose stored `change_tag` is unchanged. Same scan-cache effort as the album-index cache above. **Now unblocked** — the scanner extracts `change_tag` and the index stores it
+- [x] Add an optional capture-date scan window (`SCAN_SINCE` / `SCAN_UNTIL`, inclusive `YYYY-MM-DD`) so a scan can be limited to a slice (e.g. just 2020) for testing — config + scanner (`_parse_window`/`_in_window`), documented in `.env.example`
 
 ## Phase 4 — Telegram Notifier
 - [ ] Create Telegram bot via BotFather and record token + chat ID
@@ -80,8 +81,8 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
 - [x] Persist the index to a Docker volume so it survives container restarts — `asset-index` volume mounted at `/app/data` in [`docker-compose.yml`](docker-compose.yml); `INDEX_DB_PATH` config + `.env.example` default resolve there; `data/`+`*.db` gitignored
 - [x] Wire the index into the pipeline: upsert assets on scan; mark `offloaded` + `local_path` after a confirmed write — [`main.run`](app/main.py) upserts all scored assets per scan and calls `index.mark_offloaded` for confirmed `OFFLOADED` results (dry-run records nothing)
 - [x] Add a simple query/CLI to search the index — `python -m app.index stats` and `python -m app.index search --source/--media-type/--status/--favorite/--filename/--since/--until/--limit`
-- [ ] Extend the scanner to populate the richer index columns — the schema has nullable `location`/`fingerprint`/`change_tag`/`caption`/`width`/`height`/`duration`/`added_at` etc., but the scanner doesn't extract them yet (blocks the fingerprint-dedup and changeTag-incremental items below/elsewhere)
-- [ ] Switch duplicate detection to fingerprint-based — replace the weak `(size, creation-minute)` heuristic in [`analyser._find_duplicate_ids`](app/analyser.py#L84) with Apple's `resOriginalFingerprint` content hash (stored as the index `fingerprint` column); group by fingerprint for true duplicate detection
+- [x] Extend the scanner to populate the richer index columns — [`scanner._extract_rich_metadata`](app/scanner.py) does best-effort extraction of location/`added_date`/`file_type`/`is_hidden`/`is_live_photo`/`caption`/dimensions/`duration`/`subtype`/`hdr_type`/`has_adjustments`/`fingerprint`/`change_tag`/`tz_offset`/`master_id`; [`Asset`](app/models.py) carries them and [`index.upsert_scored`](app/index.py) persists them. (EXIF device/lens still excluded — separate offload-time item)
+- [ ] Switch duplicate detection to fingerprint-based — **now unblocked** (scanner stores `fingerprint`) — replace the weak `(size, creation-minute)` heuristic in [`analyser._find_duplicate_ids`](app/analyser.py#L84) with Apple's `resOriginalFingerprint` content hash (stored as the index `fingerprint` column); group by fingerprint for true duplicate detection
 
 ## Deferred / Future
 - [ ] Web dashboard for browsing recommendations
