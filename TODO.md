@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-14 13:00*
+*Last updated: 2026-06-14 16:34*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -82,6 +82,8 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
 - [x] Wire the index into the pipeline: upsert assets on scan; mark `offloaded` + `local_path` after a confirmed write — [`main.run`](app/main.py) upserts all scored assets per scan and calls `index.mark_offloaded` for confirmed `OFFLOADED` results (dry-run records nothing)
 - [x] Add a simple query/CLI to search the index — `python -m app.index stats` and `python -m app.index search --source/--media-type/--status/--favorite/--filename/--since/--until/--limit`
 - [x] Extend the scanner to populate the richer index columns — [`scanner._extract_rich_metadata`](app/scanner.py) does best-effort extraction of location/`added_date`/`file_type`/`is_hidden`/`is_live_photo`/`caption`/dimensions/`duration`/`subtype`/`hdr_type`/`has_adjustments`/`fingerprint`/`change_tag`/`tz_offset`/`master_id`; [`Asset`](app/models.py) carries them and [`index.upsert_scored`](app/index.py) persists them. (EXIF device/lens still excluded — separate offload-time item)
+  - GPS is decoded from the `locationEnc` **binary plist** (`lat`/`lon`) — iCloud leaves the plain `locationLatitude`/`longitude` fields empty. Verified on real data ([`scanner._extract_location`](app/scanner.py)).
+  - Verified by the **2020 dry run** (`SCAN_SINCE/UNTIL`): 400 in-window assets indexed; `added_at`/`fingerprint`/`change_tag`/dimensions/`duration`/`file_type`/`is_live_photo`/`subtype`/`master_id` all 400/400; `tz_offset` 369/400; location decoded; caption genuinely empty.
 - [ ] Switch duplicate detection to fingerprint-based — **now unblocked** (scanner stores `fingerprint`) — replace the weak `(size, creation-minute)` heuristic in [`analyser._find_duplicate_ids`](app/analyser.py#L84) with Apple's `resOriginalFingerprint` content hash (stored as the index `fingerprint` column); group by fingerprint for true duplicate detection
 
 ## Deferred / Future
