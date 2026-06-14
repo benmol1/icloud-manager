@@ -128,8 +128,6 @@ class TestExtractRichMetadata:
             "assetSubtype": {"value": 2},
             "assetHDRType": {"value": 0},
             "adjustmentType": {"value": "someEdit"},
-            "locationLatitude": {"value": 51.5},
-            "locationLongitude": {"value": -0.12},
             "captionEnc": {"value": "QmVhY2ggZGF5"},  # base64("Beach day")
             "timeZoneOffset": {"value": 3600},
         }
@@ -150,8 +148,6 @@ class TestExtractRichMetadata:
         assert meta["subtype"] == 2
         assert meta["hdr_type"] == 0
         assert meta["has_adjustments"] is True
-        assert meta["latitude"] == 51.5
-        assert meta["longitude"] == -0.12
         assert meta["caption"] == "Beach day"
         assert meta["file_type"] == "public.heic"
         assert meta["fingerprint"] == "FINGERPRINT123"
@@ -169,6 +165,25 @@ class TestExtractRichMetadata:
         assert meta["added"] is None
         assert meta["has_adjustments"] is False
         assert meta["is_hidden"] is False
+
+    def test_decodes_location_from_bplist(self):
+        import base64
+        import plistlib
+
+        blob = plistlib.dumps(
+            {"lat": 51.514, "lon": -0.1534, "alt": 31.0}, fmt=plistlib.FMT_BINARY
+        )
+        enc = base64.b64encode(blob).decode()
+        photo = _RichFakePhoto({"locationEnc": {"value": enc}}, {})
+        meta = _extract_rich_metadata(photo)
+        assert round(meta["latitude"], 3) == 51.514
+        assert round(meta["longitude"], 3) == -0.153
+
+    def test_no_location_field_is_none(self):
+        photo = _RichFakePhoto({}, {})
+        meta = _extract_rich_metadata(photo)
+        assert meta["latitude"] is None
+        assert meta["longitude"] is None
 
     def test_epoch_added_date_treated_as_missing(self):
         # pyicloud returns the 1970 epoch when addedDate is absent.

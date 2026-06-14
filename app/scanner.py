@@ -1,4 +1,6 @@
+import base64
 import logging
+import plistlib
 import re
 from datetime import datetime, timezone
 
@@ -179,6 +181,34 @@ def _extract_is_favorite(photo) -> bool:
     return bool(record_field_value(record, "isFavorite"))
 
 
+def _extract_location(asset_rec) -> tuple[float | None, float | None]:
+    """
+    Decode GPS from the ``locationEnc`` field.
+
+    iCloud leaves the plain ``locationLatitude``/``locationLongitude`` fields
+    empty and instead stores a base64-wrapped **binary plist** (``bplist00``)
+    holding ``lat``/``lon``/``alt``/… Most assets carry no location at all, in
+    which case the field is absent and we return ``(None, None)``.
+    """
+    enc = record_field_value(asset_rec, "locationEnc")
+    if enc is None:
+        return (None, None)
+
+    raw = enc if isinstance(enc, bytes) else str(enc).encode("ascii", "ignore")
+    if not raw.startswith(b"bplist"):
+        try:
+            raw = base64.b64decode(raw)
+        except Exception:  # noqa: BLE001 — fall through; plistlib will reject it
+            pass
+
+    try:
+        plist = plistlib.loads(raw)
+    except Exception:  # noqa: BLE001 — unknown encoding; treat as no location
+        return (None, None)
+
+    return (plist.get("lat"), plist.get("lon"))
+
+
 def _safe(fn, default=None):
     """Run a best-effort metadata read, swallowing the internal-API quirks."""
     try:
@@ -206,6 +236,10 @@ def _extract_rich_metadata(photo) -> dict:
         added = None  # pyicloud returns the epoch when addedDate is missing
 
     adjustment = _safe(lambda: record_field_value(asset_rec, "adjustmentType"))
+    latitude, longitude = _safe(lambda: _extract_location(asset_rec), (None, None)) or (
+        None,
+        None,
+    )
 
     return {
         "master_id": _safe(lambda: photo.master_id),
@@ -220,8 +254,8 @@ def _extract_rich_metadata(photo) -> dict:
         "subtype": _safe(lambda: record_field_value(asset_rec, "assetSubtype")),
         "hdr_type": _safe(lambda: record_field_value(asset_rec, "assetHDRType")),
         "has_adjustments": adjustment is not None,
-        "latitude": _safe(lambda: record_field_value(asset_rec, "locationLatitude")),
-        "longitude": _safe(lambda: record_field_value(asset_rec, "locationLongitude")),
+        "latitude": latitude,
+        "longitude": longitude,
         "fingerprint": _safe(
             lambda: record_field_value(master_rec, "resOriginalFingerprint")
         ),
