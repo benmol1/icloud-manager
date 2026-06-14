@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from app.analyser import ScoredAsset
 from app.config import config
@@ -57,23 +58,20 @@ def _is_non_controversial(item: ScoredAsset) -> bool:
     """
     Rules for assets that are safe to offload without asking.
 
-    !! REVIEW WITH EMMA before finalising these rules !!
-    See TODO.md — she may have strong opinions about what's safe to auto-migrate.
-
-    Current rules (all must be true):
+    All must be true:
     - Not a favourite
     - Source is WhatsApp (nursery chats etc. are the main culprit)
-    - Asset is older than min_age_days
+    - Asset is at least config.min_age_days old
     """
     asset = item.asset
-    age_days = item.breakdown.age  # non-zero only if old enough (see _age_score)
 
     if asset.is_favorite:
         return False
     if asset.source != Source.WHATSAPP:
         return False
-    if age_days == 0:
-        # _age_score returns 0 for assets < 30 days old
+
+    age_days = (datetime.now(tz=timezone.utc) - asset.created).days
+    if age_days < config.min_age_days:
         return False
 
     return True

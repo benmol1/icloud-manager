@@ -140,6 +140,30 @@ class TestRecommender:
         result = recommend(scored)
         assert len(result.auto_offload) == 0
 
+    def test_whatsapp_below_min_age_not_auto_offloaded(self):
+        # Two duplicate large WhatsApp files just under min_age. Their score
+        # clears the auto-offload threshold, so only the age rule keeps them
+        # out of auto-offload — they fall to review instead.
+        from app.config import config
+        created = datetime.now(tz=timezone.utc) - timedelta(days=config.min_age_days - 1)
+        big = int(200 * 1024 * 1024)
+        a1 = Asset("d1", "IMG-1.jpg", big, created, MediaType.IMAGE, False, Source.WHATSAPP)
+        a2 = Asset("d2", "IMG-2.jpg", big, created, MediaType.IMAGE, False, Source.WHATSAPP)
+        result = recommend(score_assets([a1, a2]))
+        assert len(result.auto_offload) == 0
+        assert len(result.review) == 2
+
+    def test_whatsapp_at_min_age_auto_offloaded(self):
+        from app.config import config
+        asset = _make_asset(
+            source=Source.WHATSAPP,
+            is_favorite=False,
+            age_days=config.min_age_days + 1,
+            size_mb=200,
+        )
+        result = recommend(score_assets([asset]))
+        assert len(result.auto_offload) == 1
+
     def test_photos_source_not_auto_offloaded(self):
         asset = _make_asset(source=Source.PHOTOS, is_favorite=False, age_days=800, size_mb=200)
         scored = score_assets([asset])

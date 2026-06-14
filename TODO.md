@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-01 17:32*
+*Last updated: 2026-06-14 06:40*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -13,6 +13,7 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [x] Create `.env.example` with all required variables
 - [x] Set up `pytest` with a basic smoke test
 - [x] Write `Dockerfile` and `docker-compose.yml` (including SMB mount)
+- [x] Write project `README.md` (overview, setup, configuration, safety)
 
 ## Phase 2 — iCloud Scanner ✅ COMPLETE
 - [x] Implement `config.py` — load all settings from environment
@@ -21,13 +22,13 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [x] Implement WhatsApp-origin heuristic (album name + `IMG-YYYYMMDD-WA\d+` filename pattern)
 - [x] Write tests for source-detection heuristic with sample filenames
 
-## Phase 3 — Analyser & Recommender
-- [ ] Implement `analyser.py` — score assets by: age, file size, duplication, source app, favourite flag
-- [ ] Define scoring weights and thresholds in config
-- [ ] Implement `recommender.py` — split into auto-offload bucket vs. review bucket
-- [ ] Define rules for "non-controversial" auto-offload (e.g. WhatsApp-origin, not favourite, >6 months old)
-- [ ] **Review auto-offload rules with Emma** — she may have strong opinions about what's safe to migrate automatically vs. what should always need approval (see `recommender.py::_is_non_controversial`)
-- [ ] Write unit tests for scoring logic with fixture data
+## Phase 3 — Analyser & Recommender ✅ COMPLETE
+- [x] Implement `analyser.py` — score assets by: age, file size, duplication, source app, favourite flag
+- [x] Define scoring weights and thresholds in config
+- [x] Implement `recommender.py` — split into auto-offload bucket vs. review bucket
+- [x] Define rules for "non-controversial" auto-offload (e.g. WhatsApp-origin, not favourite, >6 months old)
+- [x] ~~Review auto-offload rules with Emma~~ — N/A: project now scopes to Ben's account only. Rules finalised: auto-offload requires non-favourite + WhatsApp-origin + ≥ `min_age_days` (180). `min_age_days` is now actually enforced (was previously unused).
+- [x] Write unit tests for scoring logic with fixture data
 
 ## Phase 4 — Telegram Notifier
 - [ ] Create Telegram bot via BotFather and record token + chat ID
@@ -56,7 +57,5 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [ ] Test end-to-end: scan → Telegram message received → approval → file appears on Windows drive
 
 ## Deferred / Future
-- [ ] Support Emma's iCloud account (second set of credentials + separate Telegram notifications)
-- [ ] Duplicate detection across both accounts
 - [ ] Web dashboard for browsing recommendations
 - [ ] Statistics over time (storage freed, assets offloaded)
