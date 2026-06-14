@@ -9,6 +9,7 @@ the filesystem or iCloud.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -19,6 +20,14 @@ from app.config import config
 from app.models import Asset
 
 logger = logging.getLogger(__name__)
+
+# iCloud keeps real names for camera-roll shots (IMG_2351.JPG) but stores
+# app-saved media (WhatsApp/AirDrop) under an opaque UUID stem. Detect the
+# latter so we can give it a recognisable name on the NAS.
+_UUID_STEM_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 class AssetSource(Protocol):
@@ -114,7 +123,26 @@ def _do_offload(
 
 def _destination_path(asset: Asset, base: Path) -> Path:
     """``<base>/<YYYY>/<MM>/<filename>`` based on the asset's creation date."""
-    return base / f"{asset.created:%Y}" / f"{asset.created:%m}" / asset.filename
+    return base / f"{asset.created:%Y}" / f"{asset.created:%m}" / _offload_filename(asset)
+
+
+def _offload_filename(asset: Asset) -> str:
+    """
+    Human-recognisable filename for the NAS.
+
+    iCloud stores app-saved media (WhatsApp/AirDrop) under an opaque UUID such as
+    ``b9d9d5e4-3467-4559-a0fd-5cc7d59a242a.mp4``. For those we synthesise a
+    sortable ``YYYYMMDD_HHMMSS_<source>_<short>`` name so files are recognisable
+    and auditable on disk. Names that are already meaningful (e.g.
+    ``IMG_2351.JPG``) are kept exactly as-is.
+    """
+    original = Path(asset.filename)
+    if not _UUID_STEM_RE.match(original.stem):
+        return asset.filename
+
+    timestamp = asset.created.strftime("%Y%m%d_%H%M%S")
+    short_id = asset.asset_id.replace("-", "")[:8].lower()
+    return f"{timestamp}_{asset.source.value}_{short_id}{original.suffix.lower()}"
 
 
 def _unique_destination(dest: Path, reserved: set[Path]) -> Path:

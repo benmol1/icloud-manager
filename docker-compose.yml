@@ -7,8 +7,12 @@ services:
       - smb-storage:${SMB_MOUNT_PATH:-/mnt/storage}
       # pyicloud stores session/cookie files to avoid repeated 2FA prompts
       - ./icloud-session:/root/.pyicloud
+      # Searchable asset index (SQLite) — persist across container restarts
+      - asset-index:/app/data
 
 volumes:
+  asset-index:
+    driver: local
   smb-storage:
     driver: local
     driver_opts:

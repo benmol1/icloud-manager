@@ -10,8 +10,10 @@ the review bucket) are wired up.
 import logging
 
 from app import actions
+from app.actions import OffloadStatus
 from app.analyser import score_assets
 from app.config import config
+from app.index import AssetIndex
 from app.recommender import recommend
 from app.scanner import ICloudScanner
 
@@ -26,19 +28,29 @@ def run() -> None:
     recommendations = recommend(scored)
     logger.info("Recommendations:\n%s", recommendations.summary())
 
-    if not config.dry_run:
-        logger.warning(
-            "DRY_RUN is false, but live iCloud offload is not wired up yet — "
-            "running the offload step in dry-run mode anyway. No files will be "
-            "downloaded or deleted."
-        )
+    with AssetIndex() as index:
+        upserted = index.upsert_scored(scored)
+        logger.info("Asset index: upserted %d assets", upserted)
 
-    results = actions.offload(recommendations.auto_offload, dry_run=True)
-    logger.info("Auto-offload (dry-run): %d assets would be moved", len(results))
-    logger.info(
-        "Review bucket holds %d assets awaiting approval (Telegram, not yet built)",
-        len(recommendations.review),
-    )
+        if not config.dry_run:
+            logger.warning(
+                "DRY_RUN is false, but live iCloud offload is not wired up yet — "
+                "running the offload step in dry-run mode anyway. No files will be "
+                "downloaded or deleted."
+            )
+
+        results = actions.offload(recommendations.auto_offload, dry_run=True)
+        offloaded = [r for r in results if r.status == OffloadStatus.OFFLOADED]
+        for result in offloaded:
+            index.mark_offloaded(result.asset_id, result.destination)
+
+        logger.info("Auto-offload (dry-run): %d assets would be moved", len(results))
+        if offloaded:
+            logger.info("Recorded %d confirmed offloads in the index", len(offloaded))
+        logger.info(
+            "Review bucket holds %d assets awaiting approval (Telegram, not yet built)",
+            len(recommendations.review),
+        )
 
 
 def main() -> None:

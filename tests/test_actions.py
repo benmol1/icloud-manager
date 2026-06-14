@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.actions import OffloadStatus, _destination_path, _unique_destination, offload
+from app.actions import (
+    OffloadStatus,
+    _destination_path,
+    _offload_filename,
+    _unique_destination,
+    offload,
+)
 from app.analyser import ScoreBreakdown, ScoredAsset
 from app.models import Asset, MediaType, Source
 
@@ -71,6 +77,35 @@ class TestDestinationPath:
         }
         assert _unique_destination(base, reserved) == Path(
             "/mnt/storage/2023/07/IMG-0001 (2).jpg"
+        )
+
+
+# ------------------------------------------------------------------
+# Offload filename
+# ------------------------------------------------------------------
+
+class TestOffloadFilename:
+    def test_real_name_is_preserved(self):
+        asset = _scored(filename="IMG_2351.JPG").asset
+        assert _offload_filename(asset) == "IMG_2351.JPG"
+
+    def test_uuid_name_is_synthesised(self):
+        asset = _scored(
+            asset_id="b9d9d5e4-3467-4559-a0fd-5cc7d59a242a",
+            filename="b9d9d5e4-3467-4559-a0fd-5cc7d59a242a.mp4",
+            created=datetime(2024, 6, 15, 14, 30, 22, tzinfo=timezone.utc),
+        ).asset
+        assert _offload_filename(asset) == "20240615_143022_whatsapp_b9d9d5e4.mp4"
+
+    def test_uuid_destination_uses_synthesised_name(self):
+        asset = _scored(
+            asset_id="b9d9d5e4-3467-4559-a0fd-5cc7d59a242a",
+            filename="b9d9d5e4-3467-4559-a0fd-5cc7d59a242a.mp4",
+            created=datetime(2024, 6, 15, 14, 30, 22, tzinfo=timezone.utc),
+        ).asset
+        dest = _destination_path(asset, Path("/mnt/storage"))
+        assert dest == Path(
+            "/mnt/storage/2024/06/20240615_143022_whatsapp_b9d9d5e4.mp4"
         )
 
 

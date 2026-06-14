@@ -24,6 +24,9 @@ class Config:
     smb_password: str = os.getenv("SMB_PASSWORD", "")
     smb_mount_path: str = os.getenv("SMB_MOUNT_PATH", "/mnt/storage")
 
+    # Searchable asset index (SQLite). Lives on a Docker volume in production.
+    index_db_path: str = os.getenv("INDEX_DB_PATH", "data/asset_index.db")
+
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
     min_age_days: int = int(os.getenv("MIN_AGE_DAYS", "180"))
     scan_day_of_week: str = os.getenv("SCAN_DAY_OF_WEEK", "sunday")
