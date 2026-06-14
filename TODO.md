@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-14 06:40*
+*Last updated: 2026-06-14 06:48*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -37,17 +37,18 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [ ] Handle approval callbacks and trigger `actions.py` accordingly
 - [ ] Test bot locally before deploying to Pi
 
-## Phase 5 — Offload Actions
-- [ ] Implement `actions.py` — download asset from iCloud, write to SMB share path
-- [ ] Organise files on NAS by year/month folder structure
-- [ ] Delete from iCloud after confirmed write
-- [ ] Add dry-run mode (log what would happen, take no action)
-- [ ] Test with a small batch of non-critical files first
+## Phase 5 — Offload Actions ⏳ IN PROGRESS
+- [x] Implement `actions.py` — download asset from iCloud, write to SMB share path (live download/delete via an `AssetSource` seam; concrete pyicloud source still to wire)
+- [x] Organise files on NAS by year/month folder structure (`<mount>/YYYY/MM/<filename>`, with collision handling)
+- [x] Delete from iCloud after confirmed write (write-before-delete; failures never delete)
+- [x] Add dry-run mode (log what would happen, take no action) — default
+- [ ] Test with a small batch of non-critical files first (needs live iCloud session)
 
-## Phase 6 — Scheduler
+## Phase 6 — Scheduler ⏳ IN PROGRESS
 - [ ] Implement `scheduler.py` — weekly trigger using APScheduler
-- [ ] Wire up full pipeline: scan → analyse → recommend → notify → act
-- [ ] Add manual trigger endpoint or CLI flag for on-demand runs
+- [ ] Wire up full pipeline: scan → analyse → recommend → notify → act (notify/live-act still missing)
+- [x] Add manual trigger endpoint or CLI flag for on-demand runs (`uv run python -m app.main`)
+- [x] Add `app/main.py` end-to-end runner: scan → analyse → recommend → dry-run offload
 
 ## Phase 7 — Pi Deployment
 - [ ] Set up SMB share on Windows PC (share the 2 TB drive)
