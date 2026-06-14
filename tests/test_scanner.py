@@ -5,9 +5,33 @@ import pytest
 from app.models import MediaType, Source
 from app.scanner import (
     _detect_source,
+    _extract_is_favorite,
     _map_media_type,
     _normalise_datetime,
 )
+
+
+class _FakePhoto:
+    def __init__(self, asset_record):
+        self._asset_record = asset_record
+
+
+class TestExtractIsFavorite:
+    def test_favourite_flag_set(self):
+        photo = _FakePhoto({"fields": {"isFavorite": {"value": 1}}})
+        assert _extract_is_favorite(photo) is True
+
+    def test_favourite_flag_zero(self):
+        photo = _FakePhoto({"fields": {"isFavorite": {"value": 0}}})
+        assert _extract_is_favorite(photo) is False
+
+    def test_field_absent_defaults_false(self):
+        photo = _FakePhoto({"fields": {}})
+        assert _extract_is_favorite(photo) is False
+
+    def test_no_asset_record_defaults_false(self):
+        photo = _FakePhoto(None)
+        assert _extract_is_favorite(photo) is False
 
 
 class TestDetectSource:

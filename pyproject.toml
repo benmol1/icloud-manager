@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Periodic iCloud storage scanner with Telegram notifications and SMB offload"
 requires-python = ">=3.12"
 dependencies = [
-    "pyicloud==1.0.0",
+    "pyicloud==2.6.5",
     "python-telegram-bot==21.6",
     "apscheduler==3.10.4",
     "pysmb==1.2.9.1",

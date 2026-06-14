@@ -10,6 +10,23 @@ from app.models import Asset, MediaType, Source
 
 logger = logging.getLogger(__name__)
 
+try:
+    # Canonical CloudKit field accessor (pyicloud 2.x). Imported defensively
+    # because it lives in an internal module that may move between releases.
+    from pyicloud.services.photos_cloudkit.mappers import record_field_value
+except Exception:  # pragma: no cover - fallback if the internal path changes
+    def record_field_value(record, field_name):
+        fields = getattr(record, "fields", None)
+        if fields is not None and hasattr(fields, "get_value"):
+            value = fields.get_value(field_name)
+        elif isinstance(record, dict):
+            value = record.get("fields", {}).get(field_name)
+        else:
+            return None
+        if isinstance(value, dict) and "value" in value:
+            return value["value"]
+        return value
+
 # Matches WhatsApp-exported filenames: IMG-20240101-WA0001.jpg
 _WHATSAPP_FILENAME_RE = re.compile(r"^IMG-\d{8}-WA\d+\.", re.IGNORECASE)
 _WHATSAPP_ALBUM_KEYWORDS = {"whatsapp"}
@@ -73,11 +90,15 @@ class ICloudScanner:
 
     def _build_album_index(self) -> dict[str, set[str]]:
         """Return {asset_id: {album_name, ...}} for every album in the library."""
+        # pyicloud 2.x exposes `photos.albums` as an iterable container (no
+        # `.items()`); each album is iterable and carries its name.
         index: dict[str, set[str]] = {}
-        for album_name, album in self._api.photos.albums.items():
-            for photo in album:
-                asset_id = photo.id
-                index.setdefault(asset_id, set()).add(album_name)
+        for album in self._api.photos.albums:
+            try:
+                for photo in album:
+                    index.setdefault(photo.id, set()).add(album.name)
+            except Exception:
+                logger.warning("Could not index album %s", getattr(album, "name", "?"))
         return index
 
     def _photo_to_asset(
@@ -114,13 +135,13 @@ def _detect_source(filename: str, albums: list[str]) -> Source:
 
 
 def _extract_is_favorite(photo) -> bool:
-    # pyicloud exposes isFavorite in the master record fields
-    try:
-        return bool(
-            photo._master_record["fields"].get("isFavorite", {}).get("value", False)
-        )
-    except (AttributeError, KeyError, TypeError):
+    # pyicloud 2.x stores the flag as isFavorite (INT64 0/1) on the asset
+    # record. There is no public read accessor — `photo.favorite` is a *setter*
+    # (it marks the photo as a favourite) — so read the record field directly.
+    record = getattr(photo, "_asset_record", None)
+    if record is None:
         return False
+    return bool(record_field_value(record, "isFavorite"))
 
 
 def _map_media_type(item_type: str) -> MediaType:
