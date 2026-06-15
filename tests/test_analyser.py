@@ -213,3 +213,54 @@ class TestRecommender:
         summary = result.summary()
         assert "Auto-offload" in summary
         assert "Needs review" in summary
+
+
+# ------------------------------------------------------------------
+# Review bucket prioritisation & capping
+# ------------------------------------------------------------------
+
+class TestReviewPrioritisation:
+    def _review_assets(self, n: int, base_size_mb: float = 1.0) -> list[Asset]:
+        # UNKNOWN-source, old, modest-size assets reliably land in review:
+        # score = age(35) + unknown-source(~10) + small size, which clears
+        # review_threshold (40) but not auto_offload_threshold (65), and they
+        # aren't WhatsApp so they're never non-controversial.
+        return [
+            _make_asset(f"r{i}", source=Source.UNKNOWN, age_days=800, size_mb=base_size_mb + i)
+            for i in range(n)
+        ]
+
+    def test_review_sorted_by_size_desc(self):
+        result = recommend(score_assets(self._review_assets(5)))
+        sizes = [a.asset.size_mb for a in result.review]
+        assert sizes == sorted(sizes, reverse=True)
+
+    def test_review_capped_to_max(self, monkeypatch):
+        from app.config import config
+        monkeypatch.setattr(config, "review_max_items", 3)
+        result = recommend(score_assets(self._review_assets(10)))
+        assert len(result.review) == 3
+        assert len(result.review_deferred) == 7
+
+    def test_deferred_holds_the_smallest(self, monkeypatch):
+        from app.config import config
+        monkeypatch.setattr(config, "review_max_items", 3)
+        result = recommend(score_assets(self._review_assets(10)))
+        smallest_surfaced = min(a.asset.size_mb for a in result.review)
+        largest_deferred = max(a.asset.size_mb for a in result.review_deferred)
+        assert largest_deferred <= smallest_surfaced
+
+    def test_cap_zero_means_unlimited(self, monkeypatch):
+        from app.config import config
+        monkeypatch.setattr(config, "review_max_items", 0)
+        result = recommend(score_assets(self._review_assets(10)))
+        assert len(result.review) == 10
+        assert result.review_deferred == []
+
+    def test_summary_mentions_deferred(self, monkeypatch):
+        from app.config import config
+        monkeypatch.setattr(config, "review_max_items", 2)
+        result = recommend(score_assets(self._review_assets(6)))
+        summary = result.summary()
+        assert "deferred" in summary
+        assert "4 more" in summary

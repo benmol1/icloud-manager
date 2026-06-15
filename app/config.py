@@ -49,6 +49,11 @@ class Config:
     auto_offload_threshold: int = int(os.getenv("AUTO_OFFLOAD_THRESHOLD", "65"))
     # Assets scoring >= review_threshold are sent for manual approval
     review_threshold: int = int(os.getenv("REVIEW_THRESHOLD", "40"))
+    # Cap on how many assets the review bucket surfaces per run, prioritised by
+    # reclaimable size. The overflow is deferred to later runs (it reappears as
+    # the top items get actioned), keeping the Telegram approval flow manageable.
+    # 0 = unlimited (surface everything).
+    review_max_items: int = int(os.getenv("REVIEW_MAX_ITEMS", "50"))
 
     # Favourite assets are never auto-offloaded regardless of score
     favorite_score_penalty: int = int(os.getenv("FAVORITE_SCORE_PENALTY", "60"))

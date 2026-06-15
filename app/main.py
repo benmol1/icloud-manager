@@ -51,6 +51,12 @@ def run() -> None:
             "Review bucket holds %d assets awaiting approval (Telegram, not yet built)",
             len(recommendations.review),
         )
+        if recommendations.review_deferred:
+            logger.info(
+                "Deferred %d further review-eligible assets to a later run (cap=%d)",
+                len(recommendations.review_deferred),
+                config.review_max_items,
+            )
 
 
 def main() -> None:

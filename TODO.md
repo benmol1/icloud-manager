@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-15 11:40*
+*Last updated: 2026-06-15 11:45*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -33,7 +33,7 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 
 ## Dry-run Findings & Tuning (2026-06-14) ⏳ IN PROGRESS
 *From the first full dry run against the live library (~17.5k assets): 1,158 auto-offload, 8,769 review, ~7,500 keep.*
-- [ ] Make the review bucket manageable — the dry run sent **8,769 assets (half the library)** to review, far too many for the per-item Telegram Approve/Skip flow. Raise `review_threshold` and/or rethink the review UX (e.g. top-N by size, batch approval by album/category, or treat review as informational rather than per-item approval)
+- [x] Make the review bucket manageable — the review bucket is now ranked by reclaimable size (largest first) and capped per run via `REVIEW_MAX_ITEMS` (default 50; 0 = unlimited) in [`recommender._prioritise_review`](app/recommender.py). Overflow goes to a `review_deferred` bucket that resurfaces in later runs as the surfaced items get actioned — so the weekly Telegram Approve/Skip flow is bounded and front-loads the biggest space wins instead of dumping ~8,769 items at once. Summary + `main.py` log report the deferred count; 5 new unit tests; suite green (86 passed). *Note: the size-ranked cap is independent of the better dedup just landed, which should also trim review over time.*
 - [x] Use human-readable filenames for offload destinations — investigated against the live account: camera-roll assets already decode to real names (`IMG_2351.JPG`); only app-saved media (WhatsApp/AirDrop) genuinely has opaque UUID filenames in iCloud (the UUID *is* the real filename, not a decode bug). Implemented [`actions._offload_filename`](app/actions.py): keeps meaningful names as-is, synthesises a sortable `YYYYMMDD_HHMMSS_<source>_<short>.ext` for UUID-stem names. 3 unit tests; suite green (57 passed)
 
 ## Scanner Performance & UX ⏳ IN PROGRESS
