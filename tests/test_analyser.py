@@ -116,6 +116,40 @@ class TestFindDuplicates:
         a2 = Asset("id2", "b.jpg", 6_000_000, now, MediaType.IMAGE, False, Source.PHOTOS)
         assert _find_duplicate_ids([a1, a2]) == set()
 
+    def test_same_fingerprint_flagged(self):
+        # Different size and capture time, but identical content fingerprint —
+        # the old size/minute heuristic would miss these; fingerprint catches them.
+        now = datetime.now(tz=timezone.utc)
+        a1 = Asset("id1", "a.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS, fingerprint="FP1")
+        a2 = Asset(
+            "id2", "b.jpg", 6_000_000, now - timedelta(hours=3),
+            MediaType.IMAGE, False, Source.PHOTOS, fingerprint="FP1",
+        )
+        assert _find_duplicate_ids([a1, a2]) == {"id1", "id2"}
+
+    def test_different_fingerprints_not_flagged(self):
+        # Same size and capture minute, but distinct fingerprints — genuinely
+        # different content that the old heuristic would have wrongly merged.
+        now = datetime.now(tz=timezone.utc)
+        a1 = Asset("id1", "a.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS, fingerprint="FP1")
+        a2 = Asset("id2", "b.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS, fingerprint="FP2")
+        assert _find_duplicate_ids([a1, a2]) == set()
+
+    def test_fingerprint_and_heuristic_dont_collide(self):
+        # A fingerprinted asset and a fingerprint-less one must not be paired
+        # even if their fallback keys would otherwise look similar.
+        now = datetime.now(tz=timezone.utc)
+        a1 = Asset("id1", "a.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS, fingerprint="FP1")
+        a2 = Asset("id2", "b.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS)
+        assert _find_duplicate_ids([a1, a2]) == set()
+
+    def test_missing_fingerprint_falls_back_to_heuristic(self):
+        # No fingerprints available — still detect via size + creation minute.
+        now = datetime.now(tz=timezone.utc)
+        a1 = Asset("id1", "a.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS)
+        a2 = Asset("id2", "b.jpg", 5_000_000, now, MediaType.IMAGE, False, Source.PHOTOS)
+        assert _find_duplicate_ids([a1, a2]) == {"id1", "id2"}
+
 
 # ------------------------------------------------------------------
 # Recommender
