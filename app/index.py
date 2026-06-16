@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS assets (
     score           REAL,
     status          TEXT NOT NULL DEFAULT 'in_icloud', -- in_icloud | offloaded | gone
     local_path      TEXT,
+    storage_tier    TEXT,                              -- local | network (set at offload)
     offloaded_at    TEXT,
 
     first_seen_at   TEXT NOT NULL,
@@ -89,6 +90,18 @@ CREATE INDEX IF NOT EXISTS idx_assets_media_type  ON assets(media_type);
 CREATE INDEX IF NOT EXISTS idx_assets_is_favorite ON assets(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_assets_fingerprint ON assets(fingerprint);
 """
+
+# Columns added after the initial schema shipped. Applied on open so an existing
+# DB (which CREATE TABLE IF NOT EXISTS won't alter) gains them without a rebuild.
+# Each entry's DDL runs only when the column is absent; the index is created
+# afterwards, once the column is guaranteed to exist.
+_MIGRATIONS = (
+    (
+        "storage_tier",
+        "ALTER TABLE assets ADD COLUMN storage_tier TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_assets_storage_tier ON assets(storage_tier)",
+    ),
+)
 
 # Columns set on first sight and refreshed on every scan. Deliberately excludes
 # the offload lifecycle (status/local_path/offloaded_at), first_seen_at, and the
@@ -141,6 +154,18 @@ class AssetIndex:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the initial schema to an existing DB."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(assets)")}
+        with self._conn:
+            for column, add_ddl, index_ddl in _MIGRATIONS:
+                if column not in existing:
+                    self._conn.execute(add_ddl)
+                # Index DDL is idempotent (IF NOT EXISTS) and safe to run always,
+                # now that the column is guaranteed present.
+                self._conn.execute(index_ddl)
 
     # -- lifecycle -----------------------------------------------------
 
@@ -177,20 +202,26 @@ class AssetIndex:
         return len(rows)
 
     def mark_offloaded(
-        self, asset_id: str, local_path: str, *, offloaded_at: str | None = None
+        self,
+        asset_id: str,
+        local_path: str,
+        *,
+        storage_tier: str | None = None,
+        offloaded_at: str | None = None,
     ) -> None:
-        """Record a confirmed offload: status + destination + timestamp."""
+        """Record a confirmed offload: status + destination + tier + timestamp."""
         with self._conn:
             self._conn.execute(
                 """
                 UPDATE assets
                 SET status='offloaded', local_path=:local_path,
-                    offloaded_at=:offloaded_at
+                    storage_tier=:storage_tier, offloaded_at=:offloaded_at
                 WHERE asset_id=:asset_id
                 """,
                 {
                     "asset_id": asset_id,
                     "local_path": local_path,
+                    "storage_tier": storage_tier,
                     "offloaded_at": offloaded_at or _now_iso(),
                 },
             )
@@ -209,6 +240,7 @@ class AssetIndex:
         source: str | None = None,
         media_type: str | None = None,
         status: str | None = None,
+        storage_tier: str | None = None,
         is_favorite: bool | None = None,
         filename_like: str | None = None,
         since: str | None = None,
@@ -220,6 +252,9 @@ class AssetIndex:
         if source is not None:
             clauses.append("source=:source")
             params["source"] = source
+        if storage_tier is not None:
+            clauses.append("storage_tier=:storage_tier")
+            params["storage_tier"] = storage_tier
         if media_type is not None:
             clauses.append("media_type=:media_type")
             params["media_type"] = media_type
@@ -260,8 +295,21 @@ class AssetIndex:
             row["status"]: {"files": row["files"], "bytes": row["bytes"] or 0}
             for row in cur.fetchall()
         }
+        # Break offloaded assets down by where they actually live.
+        tier_cur = self._conn.execute(
+            """
+            SELECT COALESCE(storage_tier, 'unknown') AS tier,
+                   count(*)        AS files,
+                   sum(size_bytes) AS bytes
+            FROM assets WHERE status='offloaded' GROUP BY tier
+            """
+        )
+        by_tier = {
+            row["tier"]: {"files": row["files"], "bytes": row["bytes"] or 0}
+            for row in tier_cur.fetchall()
+        }
         total = self._conn.execute("SELECT count(*) AS n FROM assets").fetchone()["n"]
-        return {"total": total, "by_status": by_status}
+        return {"total": total, "by_status": by_status, "by_tier": by_tier}
 
     # -- mapping -------------------------------------------------------
 
@@ -320,6 +368,7 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--source")
     s.add_argument("--media-type", dest="media_type")
     s.add_argument("--status")
+    s.add_argument("--tier", dest="storage_tier", help="local | network")
     s.add_argument("--favorite", dest="favorite", action="store_true")
     s.add_argument("--filename", dest="filename_like")
     s.add_argument("--since")
@@ -337,11 +386,18 @@ def main(argv: list[str] | None = None) -> None:
                     f"  {status:12} {agg['files']:>7} files  "
                     f"{_format_bytes(agg['bytes'])}"
                 )
+                if status == "offloaded":
+                    for tier, t_agg in sorted(data["by_tier"].items()):
+                        print(
+                            f"    └ {tier:8} {t_agg['files']:>7} files  "
+                            f"{_format_bytes(t_agg['bytes'])}"
+                        )
         elif args.command == "search":
             rows = index.search(
                 source=args.source,
                 media_type=args.media_type,
                 status=args.status,
+                storage_tier=args.storage_tier,
                 is_favorite=True if args.favorite else None,
                 filename_like=args.filename_like,
                 since=args.since,
@@ -350,8 +406,9 @@ def main(argv: list[str] | None = None) -> None:
             )
             for row in rows:
                 dest = row["local_path"] or "-"
+                tier = row["storage_tier"] or "-"
                 print(
-                    f"{row['captured_at'][:10]}  {row['status']:10}  "
+                    f"{row['captured_at'][:10]}  {row['status']:10}  {tier:8}  "
                     f"{row['filename']:40}  {dest}"
                 )
             print(f"\n{len(rows)} row(s)")

@@ -102,6 +102,11 @@ class TestOffloadTransition:
         assert row["local_path"] == "/mnt/storage/2023/07/IMG_2351.JPG"
         assert row["offloaded_at"] is not None
 
+    def test_mark_offloaded_records_storage_tier(self, index):
+        index.upsert_scored([_scored()])
+        index.mark_offloaded("abc123", "D:/icloud-photos/x.jpg", storage_tier="local")
+        assert index.get("abc123")["storage_tier"] == "local"
+
     def test_rescan_does_not_clobber_offload(self, index):
         index.upsert_scored([_scored()])
         index.mark_offloaded("abc123", "/mnt/storage/x.jpg")
@@ -153,3 +158,56 @@ class TestStats:
         assert stats["total"] == 2
         assert stats["by_status"]["offloaded"]["files"] == 1
         assert stats["by_status"]["in_icloud"]["files"] == 1
+
+    def test_groups_offloaded_by_tier(self, index):
+        index.upsert_scored(
+            [_scored(asset_id="a"), _scored(asset_id="b"), _scored(asset_id="c")]
+        )
+        index.mark_offloaded("a", "D:/x.jpg", storage_tier="local")
+        index.mark_offloaded("b", "D:/y.jpg", storage_tier="local")
+        index.mark_offloaded("c", "//pi/share/z.jpg", storage_tier="network")
+        by_tier = index.stats()["by_tier"]
+        assert by_tier["local"]["files"] == 2
+        assert by_tier["network"]["files"] == 1
+
+    def test_offloaded_without_tier_is_unknown(self, index):
+        index.upsert_scored([_scored(asset_id="a")])
+        index.mark_offloaded("a", "/mnt/x.jpg")  # no tier given
+        assert index.stats()["by_tier"]["unknown"]["files"] == 1
+
+
+class TestTierSearch:
+    def test_filters_by_tier(self, index):
+        index.upsert_scored([_scored(asset_id="a"), _scored(asset_id="b")])
+        index.mark_offloaded("a", "D:/x.jpg", storage_tier="local")
+        index.mark_offloaded("b", "//pi/z.jpg", storage_tier="network")
+        rows = index.search(storage_tier="network")
+        assert [r["asset_id"] for r in rows] == ["b"]
+
+
+class TestMigration:
+    def test_adds_storage_tier_to_legacy_db(self, tmp_path):
+        import sqlite3
+
+        # Build a DB whose assets table lacks storage_tier, like the shipped one.
+        db = tmp_path / "legacy.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """
+            CREATE TABLE assets (
+                asset_id TEXT PRIMARY KEY, filename TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL, media_type TEXT NOT NULL,
+                source TEXT NOT NULL, is_favorite INTEGER NOT NULL DEFAULT 0,
+                fingerprint TEXT,
+                captured_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'in_icloud',
+                first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening through AssetIndex should migrate it in place.
+        with AssetIndex(db) as idx:
+            cols = {r["name"] for r in idx._conn.execute("PRAGMA table_info(assets)")}
+            assert "storage_tier" in cols

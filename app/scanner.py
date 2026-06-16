@@ -58,6 +58,13 @@ class ICloudScanner:
     # Authentication
     # ------------------------------------------------------------------
 
+    @property
+    def api(self) -> PyiCloudService:
+        """The authenticated pyicloud service (call ``authenticate`` first)."""
+        if self._api is None:
+            raise RuntimeError("Scanner is not authenticated yet")
+        return self._api
+
     def authenticate(self) -> None:
         logger.info("Authenticating with iCloud as %s", config.icloud_username)
         try:

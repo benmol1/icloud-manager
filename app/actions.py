@@ -59,6 +59,7 @@ def offload(
     dry_run: bool,
     source: AssetSource | None = None,
     mount_path: str | None = None,
+    max_items: int | None = None,
 ) -> list[OffloadResult]:
     """
     Offload each scored asset to the SMB share.
@@ -67,10 +68,16 @@ def offload(
     logged and reported as ``WOULD_OFFLOAD``. In live mode each asset is
     downloaded, written to its year/month destination, and only then deleted
     from iCloud; a failure at any step leaves the iCloud copy untouched.
+
+    ``max_items`` (when > 0) caps how many assets are processed this run — used
+    to keep an initial live test to a small, safe handful.
     """
     base = Path(mount_path or config.smb_mount_path)
     reserved: set[Path] = set()
     results: list[OffloadResult] = []
+
+    if max_items and max_items > 0:
+        items = items[:max_items]
 
     for item in items:
         asset = item.asset

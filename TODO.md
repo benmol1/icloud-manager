@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-15 11:48*
+*Last updated: 2026-06-16 11:58*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -42,11 +42,11 @@ pipeline still connects after the dedup + review-cap changes, then prove a real
 offload works end-to-end on a small, scoped slice.*
 - [ ] **Full dry run** to confirm everything connects — run `uv run python -m app.main` against the live library and verify the full chain works after the recent changes: scan → fingerprint-based dedup → analyse → size-ranked + capped review bucket → index upsert → dry-run offload. Sanity-check the new numbers (auto-offload / review / **deferred** / keep counts + MB) and that the index is populated. No files moved (dry run).
 - [ ] **Small-scale live test on one year** — pick a single year via `SCAN_SINCE`/`SCAN_UNTIL` (e.g. `2020-01-01`..`2020-12-31`) and do a *real* offload with `DRY_RUN=false`: confirm the auto-offload assets are downloaded, written to the SMB/network-storage `YYYY/MM/` folders, **then** deleted from iCloud (write-before-delete), and the index records `offloaded` + `local_path`. Verify file counts/bytes match on both sides and spot-check a few files open correctly.
-  - **Blocked on**: wiring the concrete pyicloud `AssetSource` — [`main.py`](app/main.py) currently forces dry-run even when `DRY_RUN=false` because live download/delete isn't wired yet (the [`AssetSource`](app/actions.py) seam exists but has no pyicloud implementation). This must land before a live test is possible.
-  - Start tiny: scope to a low-risk slice and/or a handful of files first; confirm on the network drive before widening.
+  - ~~**Blocked on**: wiring the concrete pyicloud `AssetSource`~~ — **Unblocked**: [`app/icloud_source.py`](app/icloud_source.py) now provides `PyiCloudAssetSource` (resolve by id, `download("original")`, soft-delete to Recently Deleted); [`main.py`](app/main.py) uses it when `DRY_RUN=false`. `OFFLOAD_MAX_ITEMS` cap lets the first test be scoped to a handful of files.
+  - Start tiny: scope to a low-risk slice and/or a handful of files first; confirm on D: (local) before the Pi/NAS.
 
 ## Scanner Performance & UX ⏳ IN PROGRESS
-*Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time.*
+*Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time. **Note:** `SCAN_SINCE`/`SCAN_UNTIL` windows do NOT reduce scan time — they filter after fetching the full library. The album-index build (~19 min) alone dominates; a windowed scan costs the same ~27 min as a full scan. Incremental caching is needed to make targeted scans fast.*
 - [ ] Add per-album / interim progress logging during the album membership index build, so the terminal shows progress instead of going silent for minutes (currently only logs "Building…" then nothing until "Scanning…")
 - [ ] Cache the album membership index so subsequent runs are incremental updates rather than two full paginated sweeps every run
 - [ ] Use `recordChangeTag` (the asset etag) for incremental scans — skip re-processing assets whose stored `change_tag` is unchanged. Same scan-cache effort as the album-index cache above. **Now unblocked** — the scanner extracts `change_tag` and the index stores it
@@ -94,6 +94,7 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
   - GPS is decoded from the `locationEnc` **binary plist** (`lat`/`lon`) — iCloud leaves the plain `locationLatitude`/`longitude` fields empty. Verified on real data ([`scanner._extract_location`](app/scanner.py)).
   - Verified by the **2020 dry run** (`SCAN_SINCE/UNTIL`): 400 in-window assets indexed; `added_at`/`fingerprint`/`change_tag`/dimensions/`duration`/`file_type`/`is_live_photo`/`subtype`/`master_id` all 400/400; `tz_offset` 369/400; location decoded; caption genuinely empty.
 - [x] Switch duplicate detection to fingerprint-based — [`analyser._find_duplicate_ids`](app/analyser.py) now groups by Apple's `resOriginalFingerprint` content hash (`Asset.fingerprint`) for true byte-for-byte duplicate detection. Assets without a fingerprint (older / app-saved media iCloud doesn't hash) fall back to the old `(size, creation-minute)` heuristic; the two key spaces are namespaced so they never collide. 5 new unit tests; suite green (81 passed)
+- [x] Add `storage_tier` column (`local` / `network`) to record where each offloaded asset lives — schema migration for existing DBs, `mark_offloaded(storage_tier=)`, `by_tier` breakdown in `stats()` output, `--tier` filter in the search CLI, and `STORAGE_TIER` config key. `.env` defaults to `local` (this PC's D:); Pi deployment will use `network`. 101 tests green.
 
 ## Deferred / Future
 - [ ] Web dashboard for browsing recommendations

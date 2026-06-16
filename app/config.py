@@ -30,6 +30,15 @@ class Config:
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
     min_age_days: int = int(os.getenv("MIN_AGE_DAYS", "180"))
 
+    # Cap on how many assets a single live offload run will move. Handy to keep
+    # an initial real test to a small handful. 0 = unlimited.
+    offload_max_items: int = int(os.getenv("OFFLOAD_MAX_ITEMS", "0"))
+
+    # Where offloaded files land for this deployment: "local" (a directly
+    # attached drive, e.g. this PC's D:) or "network" (the Pi/NAS share).
+    # Recorded against each offloaded asset so the index can summarise tiers.
+    storage_tier: str = os.getenv("STORAGE_TIER", "local")
+
     # Optional capture-date window (inclusive, ISO YYYY-MM-DD) to limit a scan —
     # handy for testing against a small slice (e.g. SCAN_SINCE=2020-01-01
     # SCAN_UNTIL=2020-12-31). Empty = no limit.

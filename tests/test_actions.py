@@ -187,3 +187,43 @@ class TestLiveOffload:
         offload(items, dry_run=False, source=source, mount_path=str(tmp_path))
         files = sorted(p.name for p in (tmp_path / "2023" / "07").iterdir())
         assert files == ["IMG-0001 (1).jpg", "IMG-0001.jpg"]
+
+
+# ------------------------------------------------------------------
+# max_items cap
+# ------------------------------------------------------------------
+
+class TestMaxItems:
+    def _items(self, n: int) -> list[ScoredAsset]:
+        return [_scored(asset_id=f"id{i}", filename=f"IMG-{i:04d}.jpg") for i in range(n)]
+
+    def test_cap_limits_processed_assets(self, tmp_path):
+        source = FakeSource()
+        results = offload(
+            self._items(10),
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+            max_items=3,
+        )
+        assert len(results) == 3
+        assert len(source.downloaded) == 3
+        assert len(source.deleted) == 3
+
+    def test_zero_means_unlimited(self, tmp_path):
+        results = offload(
+            self._items(5), dry_run=True, mount_path=str(tmp_path), max_items=0
+        )
+        assert len(results) == 5
+
+    def test_none_means_unlimited(self, tmp_path):
+        results = offload(
+            self._items(5), dry_run=True, mount_path=str(tmp_path), max_items=None
+        )
+        assert len(results) == 5
+
+    def test_cap_larger_than_batch_processes_all(self, tmp_path):
+        results = offload(
+            self._items(2), dry_run=True, mount_path=str(tmp_path), max_items=50
+        )
+        assert len(results) == 2
