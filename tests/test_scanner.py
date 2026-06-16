@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -8,9 +10,11 @@ from app.scanner import (
     _extract_is_favorite,
     _extract_rich_metadata,
     _in_window,
+    _load_album_cache,
     _map_media_type,
     _normalise_datetime,
     _parse_window,
+    _save_album_cache,
 )
 
 
@@ -227,3 +231,42 @@ class TestNormaliseDatetime:
     def test_none_returns_current_time(self):
         result = _normalise_datetime(None)
         assert result.tzinfo == timezone.utc
+
+
+class TestAlbumCache:
+    def test_missing_file_returns_none(self, tmp_path):
+        result = _load_album_cache(tmp_path / "cache.json", max_age_hours=168)
+        assert result is None
+
+    def test_max_age_zero_skips_cache(self, tmp_path):
+        cache_path = tmp_path / "cache.json"
+        _save_album_cache({"id1": {"WhatsApp"}}, cache_path)
+        assert _load_album_cache(cache_path, max_age_hours=0) is None
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        cache_path = tmp_path / "cache.json"
+        original: dict[str, set[str]] = {"id1": {"WhatsApp", "Recents"}, "id2": {"Selfies"}}
+        _save_album_cache(original, cache_path)
+        loaded = _load_album_cache(cache_path, max_age_hours=168)
+        assert loaded is not None
+        assert loaded["id1"] == {"WhatsApp", "Recents"}
+        assert loaded["id2"] == {"Selfies"}
+
+    def test_expired_cache_returns_none(self, tmp_path):
+        cache_path = tmp_path / "cache.json"
+        old_time = (datetime.now(tz=timezone.utc) - timedelta(hours=200)).isoformat()
+        cache_path.write_text(
+            json.dumps({"built_at": old_time, "index": {"id1": ["WhatsApp"]}}),
+            encoding="utf-8",
+        )
+        assert _load_album_cache(cache_path, max_age_hours=168) is None
+
+    def test_corrupt_cache_returns_none(self, tmp_path):
+        cache_path = tmp_path / "cache.json"
+        cache_path.write_text("not valid json", encoding="utf-8")
+        assert _load_album_cache(cache_path, max_age_hours=168) is None
+
+    def test_save_creates_parent_dirs(self, tmp_path):
+        cache_path = tmp_path / "sub" / "dir" / "cache.json"
+        _save_album_cache({"x": {"A"}}, cache_path)
+        assert cache_path.exists()

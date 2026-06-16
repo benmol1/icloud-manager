@@ -39,6 +39,17 @@ class Config:
     # Recorded against each offloaded asset so the index can summarise tiers.
     storage_tier: str = os.getenv("STORAGE_TIER", "local")
 
+    # Album membership index cache. Avoids rebuilding the full album index (~19
+    # min) on every run by persisting it next to INDEX_DB_PATH. 0 = always
+    # rebuild (disables cache). Default: 168 h (one week — matches scan cadence).
+    album_cache_max_age_hours: int = int(os.getenv("ALBUM_CACHE_MAX_AGE_HOURS", "168"))
+
+    # Index-only fast mode: skip the live iCloud scan entirely and read assets
+    # straight from the SQLite index (seconds vs ~10 min). Requires a prior full
+    # scan to have populated the index. Honours SCAN_SINCE/SCAN_UNTIL for a
+    # targeted slice. Won't see assets added since the last full scan.
+    scan_from_index: bool = os.getenv("SCAN_FROM_INDEX", "false").lower() == "true"
+
     # Optional capture-date window (inclusive, ISO YYYY-MM-DD) to limit a scan —
     # handy for testing against a small slice (e.g. SCAN_SINCE=2020-01-01
     # SCAN_UNTIL=2020-12-31). Empty = no limit.

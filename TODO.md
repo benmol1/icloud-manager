@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-16 11:58*
+*Last updated: 2026-06-16 16:40*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -45,12 +45,17 @@ offload works end-to-end on a small, scoped slice.*
   - ~~**Blocked on**: wiring the concrete pyicloud `AssetSource`~~ — **Unblocked**: [`app/icloud_source.py`](app/icloud_source.py) now provides `PyiCloudAssetSource` (resolve by id, `download("original")`, soft-delete to Recently Deleted); [`main.py`](app/main.py) uses it when `DRY_RUN=false`. `OFFLOAD_MAX_ITEMS` cap lets the first test be scoped to a handful of files.
   - Start tiny: scope to a low-risk slice and/or a handful of files first; confirm on D: (local) before the Pi/NAS.
 
-## Scanner Performance & UX ⏳ IN PROGRESS
-*Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time. **Note:** `SCAN_SINCE`/`SCAN_UNTIL` windows do NOT reduce scan time — they filter after fetching the full library. The album-index build (~19 min) alone dominates; a windowed scan costs the same ~27 min as a full scan. Incremental caching is needed to make targeted scans fast.*
-- [ ] Add per-album / interim progress logging during the album membership index build, so the terminal shows progress instead of going silent for minutes (currently only logs "Building…" then nothing until "Scanning…")
-- [ ] Cache the album membership index so subsequent runs are incremental updates rather than two full paginated sweeps every run
-- [ ] Use `recordChangeTag` (the asset etag) for incremental scans — skip re-processing assets whose stored `change_tag` is unchanged. Same scan-cache effort as the album-index cache above. **Now unblocked** — the scanner extracts `change_tag` and the index stores it
+## Scanner Performance & UX ✅ COMPLETE
+*Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time. **Note:** `SCAN_SINCE`/`SCAN_UNTIL` windows do NOT reduce scan time — they filter after fetching the full library. The album-index build (~19 min) alone dominates; a windowed scan costs the same ~27 min as a full scan. Incremental caching makes subsequent runs fast.*
+- [x] Add per-album / interim progress logging during the album membership index build — logs every 10 albums (`_ALBUM_LOG_INTERVAL`) with asset count so the terminal shows progress instead of going silent for ~19 min
+- [x] Cache the album membership index so subsequent runs skip the full album sweep — JSON file next to `INDEX_DB_PATH`, TTL configurable via `ALBUM_CACHE_MAX_AGE_HOURS` (default 168 h / 1 week); `_load_album_cache` / `_save_album_cache` helpers in `scanner.py`
+- [x] Use `recordChangeTag` for incremental scans — `scan()` now accepts `cached_assets` dict (loaded via `index.get_cached_assets()`); assets whose `change_tag` matches the cached value skip `_photo_to_asset()` and reuse the stored `Asset` (album membership still refreshed from the current album index). `_row_to_asset` helper added to `index.py`. `main.py` opens the index before scanning and passes the cache.
 - [x] Add an optional capture-date scan window (`SCAN_SINCE` / `SCAN_UNTIL`, inclusive `YYYY-MM-DD`) so a scan can be limited to a slice (e.g. just 2020) for testing — config + scanner (`_parse_window`/`_in_window`), documented in `.env.example`
+
+## Scanner Performance & UX — Follow-ups (from 2026-06-16 dry run) ✅ COMPLETE
+*The full dry run confirmed the album cache cut the run ~27 min → ~10 min, but the remaining ~10 min is the `photos.all` **network pagination** (16,764 assets) — which `change_tag` incremental does NOT reduce (it only skips local parsing, already sub-second). Real speed-up for targeted scans needs an index-only path.*
+- [x] **Fix the misleading album-index log line** — moved the `Building album membership index…` message out of `scan()` and into the rebuild branch of [`_build_album_index`](app/scanner.py) (after the cache-miss check), so a cache hit only logs `Loaded album index from cache …`. Added a "~19 min" hint to the rebuild message.
+- [x] **Add an index-only fast-scan mode** — `SCAN_FROM_INDEX=true` reads assets straight from the SQLite index ([`index.load_assets`](app/index.py), filtered by `status` + `SCAN_SINCE`/`SCAN_UNTIL`) and skips the iCloud `photos.all` pagination entirely. Verified loading all 16,764 in_icloud assets in <1 s vs the ~10 min live sweep. [`main.run`](app/main.py) branches on the flag, skips the index upsert in this mode (no real iCloud sighting), and authenticates lazily via [`scanner.ensure_authenticated`](app/scanner.py) only when a live offload needs a session. Config + `.env.example` documented; 5 new `load_assets` tests; suite green (116 passed — the 1 unrelated `test_dry_run_defaults_true` failure is from `.env` having `DRY_RUN=false` set for the live test).
 
 ## Phase 4 — Telegram Notifier
 - [ ] Create Telegram bot via BotFather and record token + chat ID
@@ -64,7 +69,10 @@ offload works end-to-end on a small, scoped slice.*
 - [x] Organise files on NAS by year/month folder structure (`<mount>/YYYY/MM/<filename>`, with collision handling)
 - [x] Delete from iCloud after confirmed write (write-before-delete; failures never delete)
 - [x] Add dry-run mode (log what would happen, take no action) — default
-- [ ] Test with a small batch of non-critical files first (needs live iCloud session)
+- [x] **Fast offload resolution (direct CloudKit lookup)** — the first live batch crawled at ~2m40s/file because [`PyiCloudAssetSource`](app/icloud_source.py) resolved each asset via `photos.all.get(id)`, which falls back inside pyicloud to linearly scanning the whole date-sorted library. Rewrote `_resolve` to fetch the `CPLMaster`+`CPLAsset` records directly by name (using the `master_id` we store), with the old iteration kept as a logged fallback for missing `master_id` / pyicloud API drift. Verified live: resolve dropped from ~160 s to ~0.5–1.6 s (~100–300×); the 1,236-file run goes from ~2.5 days to ~30–50 min. 6 new tests.
+- [x] **Durable per-asset offload marking** — [`actions.offload`](app/actions.py) gained an `on_offloaded` callback fired the instant each asset succeeds; [`main.run`](app/main.py) uses it to `mark_offloaded` immediately instead of after the whole batch. Previously an interrupted batch lost *all* offload records (the first live test was Ctrl-C'd at file 11/50 and the index recorded nothing). 4 new tests.
+- [x] **Tested with a small live batch** — first real offload (cap 50) ran against the live account; surfaced and fixed the two issues above. 10 files genuinely offloaded before the interrupt were reconciled into the index (`status=offloaded`, `storage_tier=local`) via a one-off matching their log destinations. **Note:** `D:\icloud-photos` is Ben's existing 20,873-file photo archive (2014–2024, robocopied to `P:` — see `copy_log.txt`), so the offload target already holds a parallel library; decide how that interacts with the auto-offload set before the full 1,236 run.
+- [ ] Capture EXIF camera metadata (device make/model, lens, aperture, ISO, focal length) opportunistically during offload — this is NOT in iCloud's CloudKit metadata, only inside the downloaded file, so parse it (Pillow/exifread/exiftool) while we already have the bytes and store into the nullable `device_make`/`device_model`/`lens`/`aperture`/`iso`/`focal_length` index columns. Don't bulk-download assets just to harvest EXIF; often absent on screenshots / WhatsApp / older photos
 - [ ] Capture EXIF camera metadata (device make/model, lens, aperture, ISO, focal length) opportunistically during offload — this is NOT in iCloud's CloudKit metadata, only inside the downloaded file, so parse it (Pillow/exifread/exiftool) while we already have the bytes and store into the nullable `device_make`/`device_model`/`lens`/`aperture`/`iso`/`focal_length` index columns. Don't bulk-download assets just to harvest EXIF; often absent on screenshots / WhatsApp / older photos
 
 ## Phase 6 — Scheduler ⏳ IN PROGRESS
@@ -99,3 +107,4 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
 ## Deferred / Future
 - [ ] Web dashboard for browsing recommendations
 - [ ] Statistics over time (storage freed, assets offloaded)
+- [ ] **True content-dedup for app-saved media** — the 2026-06-16 dry run showed the same WhatsApp file saved to the library multiple times (36 cases): distinct asset_ids + capture dates, so they're correctly treated as distinct assets and land at distinct paths. But fingerprint dedup misses them because app-saved media often lacks Apple's `resOriginalFingerprint`, so they fall back to the (size, capture-minute) heuristic and differ by date. Could hash the downloaded bytes at offload time to catch genuine content duplicates and skip re-storing them.

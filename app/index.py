@@ -31,6 +31,7 @@ from typing import Any, Iterable
 
 from app.analyser import ScoredAsset
 from app.config import config
+from app.models import Asset, MediaType, Source
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
@@ -234,6 +235,59 @@ class AssetIndex:
         )
         return cur.fetchone()
 
+    def load_assets(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        status: str | None = "in_icloud",
+    ) -> list[Asset]:
+        """Return assets reconstructed from the index (for index-only fast mode).
+
+        Filters by ``status`` (default ``in_icloud`` so already-offloaded assets
+        aren't re-processed) and an optional inclusive ``captured_at`` window.
+        ``since``/``until`` are ISO-8601 strings compared against the stored
+        UTC ``captured_at``.
+        """
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if status is not None:
+            clauses.append("status=:status")
+            params["status"] = status
+        if since is not None:
+            clauses.append("captured_at >= :since")
+            params["since"] = since
+        if until is not None:
+            clauses.append("captured_at <= :until")
+            params["until"] = until
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur = self._conn.execute(f"SELECT * FROM assets {where}", params)
+        assets: list[Asset] = []
+        for row in cur.fetchall():
+            try:
+                assets.append(_row_to_asset(row))
+            except Exception:
+                pass
+        return assets
+
+    def get_cached_assets(self) -> dict[str, Asset]:
+        """Return {asset_id: Asset} for in-iCloud assets with a known change_tag.
+
+        Used by :meth:`~app.scanner.ICloudScanner.scan` to skip the full
+        metadata parse for assets whose ``change_tag`` hasn't changed since the
+        last run (incremental scan).
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM assets WHERE status='in_icloud' AND change_tag IS NOT NULL"
+        )
+        result: dict[str, Asset] = {}
+        for row in cur.fetchall():
+            try:
+                result[row["asset_id"]] = _row_to_asset(row)
+            except Exception:
+                pass
+        return result
+
     def search(
         self,
         *,
@@ -347,6 +401,41 @@ class AssetIndex:
             "first_seen_at": seen_at,
             "last_seen_at": seen_at,
         }
+
+
+# ------------------------------------------------------------------
+# Row → Asset reconstruction
+# ------------------------------------------------------------------
+
+def _row_to_asset(row: sqlite3.Row) -> Asset:
+    """Reconstruct a :class:`~app.models.Asset` from a stored index row."""
+    return Asset(
+        asset_id=row["asset_id"],
+        filename=row["filename"],
+        size=row["size_bytes"],
+        created=datetime.fromisoformat(row["captured_at"]),
+        media_type=MediaType(row["media_type"]),
+        is_favorite=bool(row["is_favorite"]),
+        source=Source(row["source"]),
+        albums=json.loads(row["albums"] or "[]"),
+        master_id=row["master_id"],
+        added=datetime.fromisoformat(row["added_at"]) if row["added_at"] else None,
+        file_type=row["file_type"],
+        is_hidden=bool(row["is_hidden"]),
+        is_live_photo=bool(row["is_live_photo"]),
+        caption=row["caption"],
+        width=row["width"],
+        height=row["height"],
+        duration=row["duration"],
+        subtype=row["subtype"],
+        hdr_type=row["hdr_type"],
+        has_adjustments=bool(row["has_adjustments"]),
+        latitude=row["latitude"],
+        longitude=row["longitude"],
+        fingerprint=row["fingerprint"],
+        change_tag=row["change_tag"],
+        tz_offset=row["tz_offset"],
+    )
 
 
 # ------------------------------------------------------------------
