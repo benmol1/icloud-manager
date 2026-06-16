@@ -176,6 +176,16 @@ class TestStats:
         assert index.stats()["by_tier"]["unknown"]["files"] == 1
 
 
+class TestLastRefreshedAt:
+    def test_none_when_empty(self, index):
+        assert index.last_refreshed_at() is None
+
+    def test_returns_most_recent_last_seen(self, index):
+        index.upsert_scored([_scored(asset_id="a")], seen_at="2026-01-01T00:00:00+00:00")
+        index.upsert_scored([_scored(asset_id="b")], seen_at="2026-03-15T09:30:00+00:00")
+        assert index.last_refreshed_at() == "2026-03-15T09:30:00+00:00"
+
+
 class TestTierSearch:
     def test_filters_by_tier(self, index):
         index.upsert_scored([_scored(asset_id="a"), _scored(asset_id="b")])

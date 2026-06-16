@@ -336,6 +336,17 @@ class AssetIndex:
         )
         return cur.fetchall()
 
+    def last_refreshed_at(self) -> str | None:
+        """ISO-8601 timestamp of the most recent scan that updated the index.
+
+        Derived from the maximum ``last_seen_at`` across all assets — i.e. when
+        the data backing index-only mode was last refreshed from a real iCloud
+        scan. ``None`` when the index is empty.
+        """
+        cur = self._conn.execute("SELECT max(last_seen_at) AS ts FROM assets")
+        row = cur.fetchone()
+        return row["ts"] if row else None
+
     def stats(self) -> dict[str, Any]:
         cur = self._conn.execute(
             """

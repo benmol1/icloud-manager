@@ -11,6 +11,8 @@ approval flow (Phase 4).
 """
 
 import logging
+import sys
+from datetime import datetime, timezone
 
 from app import actions
 from app.actions import OffloadStatus
@@ -35,9 +37,11 @@ def run() -> None:
                 until=until.isoformat() if until else None,
             )
             logger.info(
-                "Index-only mode: loaded %d assets from the index (no iCloud scan)",
-                len(assets),
+                "Index-only mode: using the cached index, no live iCloud scan "
+                "(index last refreshed %s)",
+                _describe_age(index.last_refreshed_at()),
             )
+            logger.info("Loaded %d assets from the index", len(assets))
             if not assets:
                 logger.warning(
                     "Index is empty for this query — run a full scan first "
@@ -104,7 +108,38 @@ def run() -> None:
             )
 
 
+def _describe_age(iso_ts: str | None) -> str:
+    """Render an index ``last_seen_at`` timestamp as ``<iso> (<n><unit> ago)``."""
+    if not iso_ts:
+        return "never (index empty)"
+    try:
+        when = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return iso_ts
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    seconds = max((datetime.now(tz=timezone.utc) - when).total_seconds(), 0)
+    if seconds < 90:
+        ago = f"{int(seconds)}s ago"
+    elif seconds < 5400:
+        ago = f"{int(seconds // 60)}m ago"
+    elif seconds < 172800:
+        ago = f"{int(seconds // 3600)}h ago"
+    else:
+        ago = f"{int(seconds // 86400)}d ago"
+    return f"{iso_ts} ({ago})"
+
+
 def main() -> None:
+    # Force UTF-8 on the log streams so non-ASCII characters in messages (—, ≈,
+    # …) survive redirection to a file on Windows, whose console/redirect default
+    # is the legacy cp1252 code page and would otherwise mangle them.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
