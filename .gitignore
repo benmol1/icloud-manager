@@ -1,5 +1,7 @@
 .env
 icloud-session/
+# Run logs — contain personal asset IDs / offload destinations
+logs/
 # Local asset index (SQLite) and its WAL/SHM sidecars
 data/
 *.db

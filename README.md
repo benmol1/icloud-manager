@@ -71,7 +71,10 @@ not available** from iCloud's metadata — see
 # Summary counts by status (in_icloud / offloaded)
 uv run python -m app.index stats
 
-# Filtered lookup
+# Detailed year x source grid of file counts + sizes (optionally by status)
+uv run python -m app.index breakdown --status in_icloud
+
+# Filtered lookup (limited to max 50 results by default — raise with --limit)
 uv run python -m app.index search --source whatsapp --status in_icloud
 uv run python -m app.index search --media-type video --since 2020-01-01 --until 2020-12-31
 ```
@@ -135,7 +138,8 @@ uv run python -m app.twofactor
 # One-off scan from the CLI
 uv run python -m app.scanner
 
-# Run the full service
+# Run the full service (also writes a timestamped log to logs/:
+# dryrun_*.log or live_*.log depending on DRY_RUN)
 uv run python -m app.main
 
 # Tests
@@ -172,6 +176,10 @@ All settings come from environment variables (or a local `.env`). See
 | `SMB_MOUNT_PATH` | Container path where the share is mounted | `/mnt/storage` |
 | `DRY_RUN` | Log actions without downloading or deleting | `true` |
 | `MIN_AGE_DAYS` | Minimum age before an asset is eligible for offload | `180` |
+| `OFFLOAD_MAX_ITEMS` | Cap on assets moved per live run (`0` = unlimited) | `0` |
+| `REVIEW_MAX_ITEMS` | Cap on assets the review bucket surfaces per run (`0` = unlimited) | `50` |
+| `STORAGE_TIER` | Where offloads land: `local` (this PC's D:) or `network` (Pi/NAS) | `local` |
+| `SCAN_FROM_INDEX` | Skip the live iCloud scan and read assets from the index | `false` |
 | `INDEX_DB_PATH` | SQLite asset-index file (on a Docker volume in prod) | `data/asset_index.db` |
 | `SCAN_SINCE` / `SCAN_UNTIL` | Optional capture-date window (`YYYY-MM-DD`, inclusive) to limit a scan | — / — |
 | `SCAN_DAY_OF_WEEK` / `SCAN_TIME` | Weekly scan schedule | `sunday` / `02:00` |
@@ -180,6 +188,12 @@ All settings come from environment variables (or a local `.env`). See
 | `REVIEW_THRESHOLD` | Score at/above which assets go for manual review | `40` |
 | `FAVORITE_SCORE_PENALTY` | Score penalty applied to favourites | `60` |
 | `LARGE_FILE_MB` | Size (MB) at which an asset gets the full size score | `50` |
+
+> **Precedence:** real environment variables override `.env` (the app calls
+> `load_dotenv()` without `override`). On Windows, a lingering session variable
+> (e.g. `$env:OFFLOAD_MAX_ITEMS`) will silently shadow your `.env` edit — clear
+> it or open a fresh terminal. Each run logs the effective offload settings so a
+> mismatch is visible.
 
 > **Security:** the `.env` file holds your Apple ID and Windows credentials. Keep
 > it out of version control and restrict its permissions on the Pi

@@ -177,6 +177,69 @@ class TestLiveOffload:
         written = tmp_path / "2023" / "07" / "IMG-0001.jpg"
         assert written.exists()
 
+    def test_on_offloaded_called_per_success(self, tmp_path):
+        source = FakeSource()
+        recorded: list[str] = []
+        items = [_scored(asset_id="a"), _scored(asset_id="b")]
+        offload(
+            items,
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+            on_offloaded=lambda r: recorded.append(r.asset_id),
+        )
+        assert recorded == ["a", "b"]
+
+    def test_on_offloaded_not_called_on_failure(self, tmp_path):
+        source = FakeSource(fail_download=True)
+        recorded: list[str] = []
+        offload(
+            [_scored()],
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+            on_offloaded=lambda r: recorded.append(r.asset_id),
+        )
+        assert recorded == []
+
+    def test_on_offloaded_fires_before_next_asset(self, tmp_path):
+        # Proves durability ordering: each success is recorded before the next
+        # asset is processed (so an interrupt can't lose a completed offload).
+        source = FakeSource()
+        order: list[str] = []
+
+        def _record(r):
+            order.append(f"recorded:{r.asset_id}")
+
+        class _OrderedSource(FakeSource):
+            def download(self, asset):
+                order.append(f"download:{asset.asset_id}")
+                return super().download(asset)
+
+        offload(
+            [_scored(asset_id="a"), _scored(asset_id="b")],
+            dry_run=False,
+            source=_OrderedSource(),
+            mount_path=str(tmp_path),
+            on_offloaded=_record,
+        )
+        assert order == [
+            "download:a",
+            "recorded:a",
+            "download:b",
+            "recorded:b",
+        ]
+
+    def test_dry_run_does_not_call_on_offloaded(self, tmp_path):
+        recorded: list[str] = []
+        offload(
+            [_scored()],
+            dry_run=True,
+            mount_path=str(tmp_path),
+            on_offloaded=lambda r: recorded.append(r.asset_id),
+        )
+        assert recorded == []
+
     def test_live_collision_writes_both_files(self, tmp_path):
         created = datetime(2023, 7, 9, tzinfo=timezone.utc)
         source = FakeSource()
@@ -187,3 +250,43 @@ class TestLiveOffload:
         offload(items, dry_run=False, source=source, mount_path=str(tmp_path))
         files = sorted(p.name for p in (tmp_path / "2023" / "07").iterdir())
         assert files == ["IMG-0001 (1).jpg", "IMG-0001.jpg"]
+
+
+# ------------------------------------------------------------------
+# max_items cap
+# ------------------------------------------------------------------
+
+class TestMaxItems:
+    def _items(self, n: int) -> list[ScoredAsset]:
+        return [_scored(asset_id=f"id{i}", filename=f"IMG-{i:04d}.jpg") for i in range(n)]
+
+    def test_cap_limits_processed_assets(self, tmp_path):
+        source = FakeSource()
+        results = offload(
+            self._items(10),
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+            max_items=3,
+        )
+        assert len(results) == 3
+        assert len(source.downloaded) == 3
+        assert len(source.deleted) == 3
+
+    def test_zero_means_unlimited(self, tmp_path):
+        results = offload(
+            self._items(5), dry_run=True, mount_path=str(tmp_path), max_items=0
+        )
+        assert len(results) == 5
+
+    def test_none_means_unlimited(self, tmp_path):
+        results = offload(
+            self._items(5), dry_run=True, mount_path=str(tmp_path), max_items=None
+        )
+        assert len(results) == 5
+
+    def test_cap_larger_than_batch_processes_all(self, tmp_path):
+        results = offload(
+            self._items(2), dry_run=True, mount_path=str(tmp_path), max_items=50
+        )
+        assert len(results) == 2

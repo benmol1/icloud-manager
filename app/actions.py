@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.analyser import ScoredAsset
 from app.config import config
@@ -59,6 +59,8 @@ def offload(
     dry_run: bool,
     source: AssetSource | None = None,
     mount_path: str | None = None,
+    max_items: int | None = None,
+    on_offloaded: Callable[[OffloadResult], None] | None = None,
 ) -> list[OffloadResult]:
     """
     Offload each scored asset to the SMB share.
@@ -67,10 +69,21 @@ def offload(
     logged and reported as ``WOULD_OFFLOAD``. In live mode each asset is
     downloaded, written to its year/month destination, and only then deleted
     from iCloud; a failure at any step leaves the iCloud copy untouched.
+
+    ``on_offloaded`` (when given) is invoked with each ``OffloadResult`` the
+    instant a live offload succeeds — *before* moving to the next asset — so the
+    caller can durably record progress. This keeps the index accurate even if a
+    large batch is interrupted partway through.
+
+    ``max_items`` (when > 0) caps how many assets are processed this run — used
+    to keep an initial live test to a small, safe handful.
     """
     base = Path(mount_path or config.smb_mount_path)
     reserved: set[Path] = set()
     results: list[OffloadResult] = []
+
+    if max_items and max_items > 0:
+        items = items[:max_items]
 
     for item in items:
         asset = item.asset
@@ -82,7 +95,12 @@ def offload(
             results.append(_result(asset, dest, OffloadStatus.WOULD_OFFLOAD))
             continue
 
-        results.append(_do_offload(item, dest, source))
+        result = _do_offload(item, dest, source)
+        results.append(result)
+        # Record success immediately so an interrupted batch leaves an accurate,
+        # resumable index rather than losing every offload done this run.
+        if on_offloaded is not None and result.status == OffloadStatus.OFFLOADED:
+            on_offloaded(result)
 
     return results
 

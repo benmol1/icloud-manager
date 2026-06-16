@@ -31,6 +31,7 @@ from typing import Any, Iterable
 
 from app.analyser import ScoredAsset
 from app.config import config
+from app.models import Asset, MediaType, Source
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS assets (
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS assets (
     score           REAL,
     status          TEXT NOT NULL DEFAULT 'in_icloud', -- in_icloud | offloaded | gone
     local_path      TEXT,
+    storage_tier    TEXT,                              -- local | network (set at offload)
     offloaded_at    TEXT,
 
     first_seen_at   TEXT NOT NULL,
@@ -89,6 +91,18 @@ CREATE INDEX IF NOT EXISTS idx_assets_media_type  ON assets(media_type);
 CREATE INDEX IF NOT EXISTS idx_assets_is_favorite ON assets(is_favorite);
 CREATE INDEX IF NOT EXISTS idx_assets_fingerprint ON assets(fingerprint);
 """
+
+# Columns added after the initial schema shipped. Applied on open so an existing
+# DB (which CREATE TABLE IF NOT EXISTS won't alter) gains them without a rebuild.
+# Each entry's DDL runs only when the column is absent; the index is created
+# afterwards, once the column is guaranteed to exist.
+_MIGRATIONS = (
+    (
+        "storage_tier",
+        "ALTER TABLE assets ADD COLUMN storage_tier TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_assets_storage_tier ON assets(storage_tier)",
+    ),
+)
 
 # Columns set on first sight and refreshed on every scan. Deliberately excludes
 # the offload lifecycle (status/local_path/offloaded_at), first_seen_at, and the
@@ -141,6 +155,18 @@ class AssetIndex:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the initial schema to an existing DB."""
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(assets)")}
+        with self._conn:
+            for column, add_ddl, index_ddl in _MIGRATIONS:
+                if column not in existing:
+                    self._conn.execute(add_ddl)
+                # Index DDL is idempotent (IF NOT EXISTS) and safe to run always,
+                # now that the column is guaranteed present.
+                self._conn.execute(index_ddl)
 
     # -- lifecycle -----------------------------------------------------
 
@@ -177,20 +203,26 @@ class AssetIndex:
         return len(rows)
 
     def mark_offloaded(
-        self, asset_id: str, local_path: str, *, offloaded_at: str | None = None
+        self,
+        asset_id: str,
+        local_path: str,
+        *,
+        storage_tier: str | None = None,
+        offloaded_at: str | None = None,
     ) -> None:
-        """Record a confirmed offload: status + destination + timestamp."""
+        """Record a confirmed offload: status + destination + tier + timestamp."""
         with self._conn:
             self._conn.execute(
                 """
                 UPDATE assets
                 SET status='offloaded', local_path=:local_path,
-                    offloaded_at=:offloaded_at
+                    storage_tier=:storage_tier, offloaded_at=:offloaded_at
                 WHERE asset_id=:asset_id
                 """,
                 {
                     "asset_id": asset_id,
                     "local_path": local_path,
+                    "storage_tier": storage_tier,
                     "offloaded_at": offloaded_at or _now_iso(),
                 },
             )
@@ -203,12 +235,66 @@ class AssetIndex:
         )
         return cur.fetchone()
 
+    def load_assets(
+        self,
+        *,
+        since: str | None = None,
+        until: str | None = None,
+        status: str | None = "in_icloud",
+    ) -> list[Asset]:
+        """Return assets reconstructed from the index (for index-only fast mode).
+
+        Filters by ``status`` (default ``in_icloud`` so already-offloaded assets
+        aren't re-processed) and an optional inclusive ``captured_at`` window.
+        ``since``/``until`` are ISO-8601 strings compared against the stored
+        UTC ``captured_at``.
+        """
+        clauses: list[str] = []
+        params: dict[str, Any] = {}
+        if status is not None:
+            clauses.append("status=:status")
+            params["status"] = status
+        if since is not None:
+            clauses.append("captured_at >= :since")
+            params["since"] = since
+        if until is not None:
+            clauses.append("captured_at <= :until")
+            params["until"] = until
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        cur = self._conn.execute(f"SELECT * FROM assets {where}", params)
+        assets: list[Asset] = []
+        for row in cur.fetchall():
+            try:
+                assets.append(_row_to_asset(row))
+            except Exception:
+                pass
+        return assets
+
+    def get_cached_assets(self) -> dict[str, Asset]:
+        """Return {asset_id: Asset} for in-iCloud assets with a known change_tag.
+
+        Used by :meth:`~app.scanner.ICloudScanner.scan` to skip the full
+        metadata parse for assets whose ``change_tag`` hasn't changed since the
+        last run (incremental scan).
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM assets WHERE status='in_icloud' AND change_tag IS NOT NULL"
+        )
+        result: dict[str, Asset] = {}
+        for row in cur.fetchall():
+            try:
+                result[row["asset_id"]] = _row_to_asset(row)
+            except Exception:
+                pass
+        return result
+
     def search(
         self,
         *,
         source: str | None = None,
         media_type: str | None = None,
         status: str | None = None,
+        storage_tier: str | None = None,
         is_favorite: bool | None = None,
         filename_like: str | None = None,
         since: str | None = None,
@@ -220,6 +306,9 @@ class AssetIndex:
         if source is not None:
             clauses.append("source=:source")
             params["source"] = source
+        if storage_tier is not None:
+            clauses.append("storage_tier=:storage_tier")
+            params["storage_tier"] = storage_tier
         if media_type is not None:
             clauses.append("media_type=:media_type")
             params["media_type"] = media_type
@@ -247,6 +336,17 @@ class AssetIndex:
         )
         return cur.fetchall()
 
+    def last_refreshed_at(self) -> str | None:
+        """ISO-8601 timestamp of the most recent scan that updated the index.
+
+        Derived from the maximum ``last_seen_at`` across all assets — i.e. when
+        the data backing index-only mode was last refreshed from a real iCloud
+        scan. ``None`` when the index is empty.
+        """
+        cur = self._conn.execute("SELECT max(last_seen_at) AS ts FROM assets")
+        row = cur.fetchone()
+        return row["ts"] if row else None
+
     def stats(self) -> dict[str, Any]:
         cur = self._conn.execute(
             """
@@ -260,8 +360,55 @@ class AssetIndex:
             row["status"]: {"files": row["files"], "bytes": row["bytes"] or 0}
             for row in cur.fetchall()
         }
+        # Break offloaded assets down by where they actually live.
+        tier_cur = self._conn.execute(
+            """
+            SELECT COALESCE(storage_tier, 'unknown') AS tier,
+                   count(*)        AS files,
+                   sum(size_bytes) AS bytes
+            FROM assets WHERE status='offloaded' GROUP BY tier
+            """
+        )
+        by_tier = {
+            row["tier"]: {"files": row["files"], "bytes": row["bytes"] or 0}
+            for row in tier_cur.fetchall()
+        }
         total = self._conn.execute("SELECT count(*) AS n FROM assets").fetchone()["n"]
-        return {"total": total, "by_status": by_status}
+        return {"total": total, "by_status": by_status, "by_tier": by_tier}
+
+    def breakdown(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        """Per-(year, source) file counts and sizes for a detailed library view.
+
+        Year is taken from ``captured_at``. Optionally filtered by ``status``
+        (e.g. ``in_icloud`` to ignore already-offloaded assets). Rows are sorted
+        by year then source; the CLI pivots them into a year x source grid.
+        """
+        params: dict[str, Any] = {}
+        where = ""
+        if status is not None:
+            where = "WHERE status = :status"
+            params["status"] = status
+        cur = self._conn.execute(
+            f"""
+            SELECT substr(captured_at, 1, 4) AS year,
+                   source,
+                   count(*)        AS files,
+                   sum(size_bytes) AS bytes
+            FROM assets {where}
+            GROUP BY year, source
+            ORDER BY year, source
+            """,
+            params,
+        )
+        return [
+            {
+                "year": row["year"],
+                "source": row["source"],
+                "files": row["files"],
+                "bytes": row["bytes"] or 0,
+            }
+            for row in cur.fetchall()
+        ]
 
     # -- mapping -------------------------------------------------------
 
@@ -302,6 +449,41 @@ class AssetIndex:
 
 
 # ------------------------------------------------------------------
+# Row → Asset reconstruction
+# ------------------------------------------------------------------
+
+def _row_to_asset(row: sqlite3.Row) -> Asset:
+    """Reconstruct a :class:`~app.models.Asset` from a stored index row."""
+    return Asset(
+        asset_id=row["asset_id"],
+        filename=row["filename"],
+        size=row["size_bytes"],
+        created=datetime.fromisoformat(row["captured_at"]),
+        media_type=MediaType(row["media_type"]),
+        is_favorite=bool(row["is_favorite"]),
+        source=Source(row["source"]),
+        albums=json.loads(row["albums"] or "[]"),
+        master_id=row["master_id"],
+        added=datetime.fromisoformat(row["added_at"]) if row["added_at"] else None,
+        file_type=row["file_type"],
+        is_hidden=bool(row["is_hidden"]),
+        is_live_photo=bool(row["is_live_photo"]),
+        caption=row["caption"],
+        width=row["width"],
+        height=row["height"],
+        duration=row["duration"],
+        subtype=row["subtype"],
+        hdr_type=row["hdr_type"],
+        has_adjustments=bool(row["has_adjustments"]),
+        latitude=row["latitude"],
+        longitude=row["longitude"],
+        fingerprint=row["fingerprint"],
+        change_tag=row["change_tag"],
+        tz_offset=row["tz_offset"],
+    )
+
+
+# ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
 
@@ -310,16 +492,80 @@ def _format_bytes(n: int) -> str:
     return f"{gb:.2f} GB"
 
 
+def _human_size(n: int) -> str:
+    """Compact size for grid cells: ``42.0M`` / ``1.3G``."""
+    mb = n / 1024 / 1024
+    if mb < 1024:
+        return f"{mb:.1f}M"
+    return f"{mb / 1024:.1f}G"
+
+
+def _print_breakdown(rows: list[dict[str, Any]], status: str | None) -> None:
+    """Pivot flat (year, source) rows into a year x source grid with totals."""
+    scope = f" (status={status})" if status else ""
+    if not rows:
+        print(f"No assets in the index{scope}.")
+        return
+
+    sources = sorted({r["source"] for r in rows})
+    years = sorted({r["year"] for r in rows})
+    grid = {(r["year"], r["source"]): (r["files"], r["bytes"]) for r in rows}
+
+    year_w, col_w = 6, 16
+
+    def cell(files: int, byts: int) -> str:
+        return f"{files} / {_human_size(byts)}" if files else "-"
+
+    def line(label: str, get) -> str:
+        out = f"{label:<{year_w}}"
+        for s in sources:
+            out += f"{get(s):>{col_w}}"
+        return out
+
+    header = line("YEAR", lambda s: s) + f"{'TOTAL':>{col_w}}"
+    print(header)
+    print("-" * len(header))
+
+    col_totals = {s: [0, 0] for s in sources}
+    for y in years:
+        row_files = row_bytes = 0
+        out = f"{y:<{year_w}}"
+        for s in sources:
+            f, b = grid.get((y, s), (0, 0))
+            out += f"{cell(f, b):>{col_w}}"
+            row_files += f
+            row_bytes += b
+            col_totals[s][0] += f
+            col_totals[s][1] += b
+        out += f"{cell(row_files, row_bytes):>{col_w}}"
+        print(out)
+
+    print("-" * len(header))
+    total_files = sum(c[0] for c in col_totals.values())
+    total_bytes = sum(c[1] for c in col_totals.values())
+    footer = f"{'TOTAL':<{year_w}}"
+    for s in sources:
+        footer += f"{cell(*col_totals[s]):>{col_w}}"
+    footer += f"{cell(total_files, total_bytes):>{col_w}}"
+    print(footer)
+    print(f"\n{total_files} files / {_format_bytes(total_bytes)} across "
+          f"{len(years)} years{scope}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Query the iCloud asset index.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("stats", help="Summary counts by status")
 
+    b = sub.add_parser("breakdown", help="Year x source grid of files and size")
+    b.add_argument("--status", help="Filter by status, e.g. in_icloud | offloaded")
+
     s = sub.add_parser("search", help="Filtered lookup")
     s.add_argument("--source")
     s.add_argument("--media-type", dest="media_type")
     s.add_argument("--status")
+    s.add_argument("--tier", dest="storage_tier", help="local | network")
     s.add_argument("--favorite", dest="favorite", action="store_true")
     s.add_argument("--filename", dest="filename_like")
     s.add_argument("--since")
@@ -337,11 +583,20 @@ def main(argv: list[str] | None = None) -> None:
                     f"  {status:12} {agg['files']:>7} files  "
                     f"{_format_bytes(agg['bytes'])}"
                 )
+                if status == "offloaded":
+                    for tier, t_agg in sorted(data["by_tier"].items()):
+                        print(
+                            f"    └ {tier:8} {t_agg['files']:>7} files  "
+                            f"{_format_bytes(t_agg['bytes'])}"
+                        )
+        elif args.command == "breakdown":
+            _print_breakdown(index.breakdown(status=args.status), args.status)
         elif args.command == "search":
             rows = index.search(
                 source=args.source,
                 media_type=args.media_type,
                 status=args.status,
+                storage_tier=args.storage_tier,
                 is_favorite=True if args.favorite else None,
                 filename_like=args.filename_like,
                 since=args.since,
@@ -350,8 +605,9 @@ def main(argv: list[str] | None = None) -> None:
             )
             for row in rows:
                 dest = row["local_path"] or "-"
+                tier = row["storage_tier"] or "-"
                 print(
-                    f"{row['captured_at'][:10]}  {row['status']:10}  "
+                    f"{row['captured_at'][:10]}  {row['status']:10}  {tier:8}  "
                     f"{row['filename']:40}  {dest}"
                 )
             print(f"\n{len(rows)} row(s)")
