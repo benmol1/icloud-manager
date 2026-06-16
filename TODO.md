@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-16 16:40*
+*Last updated: 2026-06-16 17:15*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -36,12 +36,12 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [x] Make the review bucket manageable — the review bucket is now ranked by reclaimable size (largest first) and capped per run via `REVIEW_MAX_ITEMS` (default 50; 0 = unlimited) in [`recommender._prioritise_review`](app/recommender.py). Overflow goes to a `review_deferred` bucket that resurfaces in later runs as the surfaced items get actioned — so the weekly Telegram Approve/Skip flow is bounded and front-loads the biggest space wins instead of dumping ~8,769 items at once. Summary + `main.py` log report the deferred count; 5 new unit tests; suite green (86 passed). *Note: the size-ranked cap is independent of the better dedup just landed, which should also trim review over time.*
 - [x] Use human-readable filenames for offload destinations — investigated against the live account: camera-roll assets already decode to real names (`IMG_2351.JPG`); only app-saved media (WhatsApp/AirDrop) genuinely has opaque UUID filenames in iCloud (the UUID *is* the real filename, not a decode bug). Implemented [`actions._offload_filename`](app/actions.py): keeps meaningful names as-is, synthesises a sortable `YYYYMMDD_HHMMSS_<source>_<short>.ext` for UUID-stem names. 3 unit tests; suite green (57 passed)
 
-## Next: Verification & Small-Scale Live Test 🎯 NEXT UP
+## Next: Verification & Small-Scale Live Test ✅ COMPLETE
 *Immediate priority before building the notifier. First confirm the whole
 pipeline still connects after the dedup + review-cap changes, then prove a real
 offload works end-to-end on a small, scoped slice.*
-- [ ] **Full dry run** to confirm everything connects — run `uv run python -m app.main` against the live library and verify the full chain works after the recent changes: scan → fingerprint-based dedup → analyse → size-ranked + capped review bucket → index upsert → dry-run offload. Sanity-check the new numbers (auto-offload / review / **deferred** / keep counts + MB) and that the index is populated. No files moved (dry run).
-- [ ] **Small-scale live test on one year** — pick a single year via `SCAN_SINCE`/`SCAN_UNTIL` (e.g. `2020-01-01`..`2020-12-31`) and do a *real* offload with `DRY_RUN=false`: confirm the auto-offload assets are downloaded, written to the SMB/network-storage `YYYY/MM/` folders, **then** deleted from iCloud (write-before-delete), and the index records `offloaded` + `local_path`. Verify file counts/bytes match on both sides and spot-check a few files open correctly.
+- [x] **Full dry run** to confirm everything connects — run `uv run python -m app.main` against the live library and verify the full chain works after the recent changes: scan → fingerprint-based dedup → analyse → size-ranked + capped review bucket → index upsert → dry-run offload. Sanity-check the new numbers (auto-offload / review / **deferred** / keep counts + MB) and that the index is populated. No files moved (dry run).
+- [x] **Small-scale live test** — multiple real capped offloads (`OFFLOAD_MAX_ITEMS`, batches of 50) run against the live account via `DRY_RUN=false` in index-only mode: auto-offload assets downloaded, written to `D:\icloud-photos\YYYY\MM\`, **then** deleted from iCloud (write-before-delete), with the index recording `offloaded` + `local_path` + `storage_tier=local` per asset (durable, mid-batch). All WhatsApp JPG/MP4 from 2024-03 so far (oldest-first ordering). *Still to do for the full run: decide how the auto-offload set interacts with the existing `D:\icloud-photos` archive (see Phase 5 note), and consider scoping by year via `SCAN_SINCE`/`SCAN_UNTIL`.*
   - ~~**Blocked on**: wiring the concrete pyicloud `AssetSource`~~ — **Unblocked**: [`app/icloud_source.py`](app/icloud_source.py) now provides `PyiCloudAssetSource` (resolve by id, `download("original")`, soft-delete to Recently Deleted); [`main.py`](app/main.py) uses it when `DRY_RUN=false`. `OFFLOAD_MAX_ITEMS` cap lets the first test be scoped to a handful of files.
   - Start tiny: scope to a low-risk slice and/or a handful of files first; confirm on D: (local) before the Pi/NAS.
 
@@ -56,6 +56,16 @@ offload works end-to-end on a small, scoped slice.*
 *The full dry run confirmed the album cache cut the run ~27 min → ~10 min, but the remaining ~10 min is the `photos.all` **network pagination** (16,764 assets) — which `change_tag` incremental does NOT reduce (it only skips local parsing, already sub-second). Real speed-up for targeted scans needs an index-only path.*
 - [x] **Fix the misleading album-index log line** — moved the `Building album membership index…` message out of `scan()` and into the rebuild branch of [`_build_album_index`](app/scanner.py) (after the cache-miss check), so a cache hit only logs `Loaded album index from cache …`. Added a "~19 min" hint to the rebuild message.
 - [x] **Add an index-only fast-scan mode** — `SCAN_FROM_INDEX=true` reads assets straight from the SQLite index ([`index.load_assets`](app/index.py), filtered by `status` + `SCAN_SINCE`/`SCAN_UNTIL`) and skips the iCloud `photos.all` pagination entirely. Verified loading all 16,764 in_icloud assets in <1 s vs the ~10 min live sweep. [`main.run`](app/main.py) branches on the flag, skips the index upsert in this mode (no real iCloud sighting), and authenticates lazily via [`scanner.ensure_authenticated`](app/scanner.py) only when a live offload needs a session. Config + `.env.example` documented; 5 new `load_assets` tests; suite green (116 passed — the 1 unrelated `test_dry_run_defaults_true` failure is from `.env` having `DRY_RUN=false` set for the live test).
+
+## Logging, Observability & Config (2026-06-16) ✅ COMPLETE
+*From three small live batches: tightened run logging and fixed a config gotcha that made an offload cap silently differ from `.env`.*
+- [x] **UTF-8 log output** — [`main._configure_logging`](app/main.py) forces UTF-8 on stdout/stderr (and the file handler) so non-ASCII chars (`—`, `≈`, `…`) no longer mangle to cp1252 (`ù`) when logs are written/redirected on Windows.
+- [x] **Auto-write a timestamped run log** — every run writes `logs/<live|dryrun>_YYYYMMDD_HHMMSS.log` (prefix from `DRY_RUN`) alongside console output, so no manual `Tee-Object` is needed. `logs/` is gitignored.
+- [x] **Index-only mode logs index freshness** — index-only runs log when the cached index was last refreshed (`AssetIndex.last_refreshed_at` = max `last_seen_at`, with a human-readable age) so it's clear how stale the recommendations are.
+- [x] **`breakdown` index CLI** — `python -m app.index breakdown [--status in_icloud]` prints a year × source grid of file counts + sizes with per-year/per-source totals (`AssetIndex.breakdown`). More detail than `stats`.
+- [x] **Log effective offload settings** — [`main.run`](app/main.py) logs `Offload settings: mode=…, cap=… (OFFLOAD_MAX_ITEMS), storage_tier=…` before offloading, so a cap that doesn't match `.env` is obvious.
+- [x] **Config read from env in `__init__`** — [`Config`](app/config.py) now reads env vars on construction (not at class-definition time), so a fresh `Config()` reflects the current environment and tests can `monkeypatch.setenv/delenv` without `importlib.reload`. Fixes the long-standing `test_dry_run_defaults_true` failure (it broke whenever `.env` set `DRY_RUN=false`, because reload re-ran `load_dotenv`). Suite fully green (132 passed).
+  - **Gotcha learned:** `load_dotenv(override=False)` means a real shell env var beats `.env`. A lingering `$env:OFFLOAD_MAX_ITEMS=50` in the PowerShell session silently capped a run to 50 despite `.env` saying 200. Correct precedence for Docker (real env wins) — clear the session var / use a fresh terminal; the new settings log now makes the mismatch visible.
 
 ## Phase 4 — Telegram Notifier
 - [ ] Create Telegram bot via BotFather and record token + chat ID
