@@ -24,8 +24,17 @@ class Config:
     smb_password: str = os.getenv("SMB_PASSWORD", "")
     smb_mount_path: str = os.getenv("SMB_MOUNT_PATH", "/mnt/storage")
 
+    # Searchable asset index (SQLite). Lives on a Docker volume in production.
+    index_db_path: str = os.getenv("INDEX_DB_PATH", "data/asset_index.db")
+
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
     min_age_days: int = int(os.getenv("MIN_AGE_DAYS", "180"))
+
+    # Optional capture-date window (inclusive, ISO YYYY-MM-DD) to limit a scan —
+    # handy for testing against a small slice (e.g. SCAN_SINCE=2020-01-01
+    # SCAN_UNTIL=2020-12-31). Empty = no limit.
+    scan_since: str = os.getenv("SCAN_SINCE", "")
+    scan_until: str = os.getenv("SCAN_UNTIL", "")
     scan_day_of_week: str = os.getenv("SCAN_DAY_OF_WEEK", "sunday")
     scan_time: str = os.getenv("SCAN_TIME", "02:00")
 
@@ -40,6 +49,11 @@ class Config:
     auto_offload_threshold: int = int(os.getenv("AUTO_OFFLOAD_THRESHOLD", "65"))
     # Assets scoring >= review_threshold are sent for manual approval
     review_threshold: int = int(os.getenv("REVIEW_THRESHOLD", "40"))
+    # Cap on how many assets the review bucket surfaces per run, prioritised by
+    # reclaimable size. The overflow is deferred to later runs (it reappears as
+    # the top items get actioned), keeping the Telegram approval flow manageable.
+    # 0 = unlimited (surface everything).
+    review_max_items: int = int(os.getenv("REVIEW_MAX_ITEMS", "50"))
 
     # Favourite assets are never auto-offloaded regardless of score
     favorite_score_penalty: int = int(os.getenv("FAVORITE_SCORE_PENALTY", "60"))

@@ -82,11 +82,23 @@ def _source_score(asset: Asset) -> float:
 
 
 def _find_duplicate_ids(assets: list[Asset]) -> set[str]:
-    """Assets sharing the same (size, creation-minute) are treated as duplicates."""
+    """Identify content-duplicate assets.
+
+    The primary signal is Apple's ``resOriginalFingerprint`` content hash
+    (``Asset.fingerprint``): assets sharing a fingerprint are true,
+    byte-for-byte duplicates of the same original. For assets that lack a
+    fingerprint — older or app-saved media iCloud doesn't hash — we fall back
+    to the weaker ``(size, creation-minute)`` heuristic so they're not silently
+    dropped from dedup. Fingerprinted and non-fingerprinted assets never
+    collide because their keys are namespaced.
+    """
     seen: dict[tuple, str] = {}
     duplicates: set[str] = set()
     for asset in assets:
-        key = (asset.size, asset.created.replace(second=0, microsecond=0))
+        if asset.fingerprint:
+            key: tuple = ("fingerprint", asset.fingerprint)
+        else:
+            key = ("size-minute", asset.size, asset.created.replace(second=0, microsecond=0))
         if key in seen:
             duplicates.add(asset.asset_id)
             duplicates.add(seen[key])

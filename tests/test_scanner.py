@@ -5,9 +5,74 @@ import pytest
 from app.models import MediaType, Source
 from app.scanner import (
     _detect_source,
+    _extract_is_favorite,
+    _extract_rich_metadata,
+    _in_window,
     _map_media_type,
     _normalise_datetime,
+    _parse_window,
 )
+
+
+class _FakePhoto:
+    def __init__(self, asset_record):
+        self._asset_record = asset_record
+
+
+class _RichFakePhoto:
+    """Fake pyicloud asset with the accessors + records the scanner reads."""
+
+    def __init__(
+        self,
+        asset_fields,
+        master_fields,
+        *,
+        dimensions=(None, None),
+        added=None,
+        is_live=False,
+        master_id="M1",
+        change_tag="tag123",
+    ):
+        self._asset_record = {"fields": asset_fields, "recordChangeTag": change_tag}
+        self._master_record = {"fields": master_fields}
+        self._dimensions = dimensions
+        self._added = added
+        self._is_live = is_live
+        self._master_id = master_id
+
+    @property
+    def dimensions(self):
+        return self._dimensions
+
+    @property
+    def added_date(self):
+        return self._added
+
+    @property
+    def is_live_photo(self):
+        return self._is_live
+
+    @property
+    def master_id(self):
+        return self._master_id
+
+
+class TestExtractIsFavorite:
+    def test_favourite_flag_set(self):
+        photo = _FakePhoto({"fields": {"isFavorite": {"value": 1}}})
+        assert _extract_is_favorite(photo) is True
+
+    def test_favourite_flag_zero(self):
+        photo = _FakePhoto({"fields": {"isFavorite": {"value": 0}}})
+        assert _extract_is_favorite(photo) is False
+
+    def test_field_absent_defaults_false(self):
+        photo = _FakePhoto({"fields": {}})
+        assert _extract_is_favorite(photo) is False
+
+    def test_no_asset_record_defaults_false(self):
+        photo = _FakePhoto(None)
+        assert _extract_is_favorite(photo) is False
 
 
 class TestDetectSource:
@@ -53,6 +118,100 @@ class TestMapMediaType:
 
     def test_case_insensitive(self):
         assert _map_media_type("IMAGE") == MediaType.IMAGE
+
+
+class TestExtractRichMetadata:
+    def test_pulls_available_fields(self):
+        asset_fields = {
+            "isHidden": {"value": 1},
+            "duration": {"value": 12.5},
+            "assetSubtype": {"value": 2},
+            "assetHDRType": {"value": 0},
+            "adjustmentType": {"value": "someEdit"},
+            "captionEnc": {"value": "QmVhY2ggZGF5"},  # base64("Beach day")
+            "timeZoneOffset": {"value": 3600},
+        }
+        master_fields = {
+            "resOriginalFileType": {"value": "public.heic"},
+            "resOriginalFingerprint": {"value": "FINGERPRINT123"},
+        }
+        photo = _RichFakePhoto(
+            asset_fields,
+            master_fields,
+            dimensions=(4032, 3024),
+            added=datetime(2020, 5, 1, tzinfo=timezone.utc),
+        )
+        meta = _extract_rich_metadata(photo)
+
+        assert meta["is_hidden"] is True
+        assert meta["duration"] == 12.5
+        assert meta["subtype"] == 2
+        assert meta["hdr_type"] == 0
+        assert meta["has_adjustments"] is True
+        assert meta["caption"] == "Beach day"
+        assert meta["file_type"] == "public.heic"
+        assert meta["fingerprint"] == "FINGERPRINT123"
+        assert meta["change_tag"] == "tag123"
+        assert (meta["width"], meta["height"]) == (4032, 3024)
+        assert meta["added"].year == 2020
+        assert meta["tz_offset"] == 3600
+        assert meta["master_id"] == "M1"
+
+    def test_missing_fields_default_safely(self):
+        photo = _RichFakePhoto({}, {}, dimensions=(None, None), added=None)
+        meta = _extract_rich_metadata(photo)
+        assert meta["caption"] is None
+        assert meta["latitude"] is None
+        assert meta["added"] is None
+        assert meta["has_adjustments"] is False
+        assert meta["is_hidden"] is False
+
+    def test_decodes_location_from_bplist(self):
+        import base64
+        import plistlib
+
+        blob = plistlib.dumps(
+            {"lat": 51.514, "lon": -0.1534, "alt": 31.0}, fmt=plistlib.FMT_BINARY
+        )
+        enc = base64.b64encode(blob).decode()
+        photo = _RichFakePhoto({"locationEnc": {"value": enc}}, {})
+        meta = _extract_rich_metadata(photo)
+        assert round(meta["latitude"], 3) == 51.514
+        assert round(meta["longitude"], 3) == -0.153
+
+    def test_no_location_field_is_none(self):
+        photo = _RichFakePhoto({}, {})
+        meta = _extract_rich_metadata(photo)
+        assert meta["latitude"] is None
+        assert meta["longitude"] is None
+
+    def test_epoch_added_date_treated_as_missing(self):
+        # pyicloud returns the 1970 epoch when addedDate is absent.
+        photo = _RichFakePhoto(
+            {}, {}, added=datetime(1970, 1, 1, tzinfo=timezone.utc)
+        )
+        assert _extract_rich_metadata(photo)["added"] is None
+
+
+class TestScanWindow:
+    def test_no_window_is_none(self):
+        assert _parse_window("", "") == (None, None)
+
+    def test_since_and_until_inclusive(self):
+        since, until = _parse_window("2020-01-01", "2020-12-31")
+        assert since == datetime(2020, 1, 1, tzinfo=timezone.utc)
+        assert until == datetime(2020, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+    def test_in_window_bounds(self):
+        since, until = _parse_window("2020-01-01", "2020-12-31")
+        assert _in_window(datetime(2020, 6, 1, tzinfo=timezone.utc), since, until)
+        assert not _in_window(datetime(2019, 6, 1, tzinfo=timezone.utc), since, until)
+        assert not _in_window(datetime(2021, 1, 1, tzinfo=timezone.utc), since, until)
+
+    def test_open_ended_window(self):
+        since, until = _parse_window("2020-01-01", "")
+        assert _in_window(datetime(2025, 1, 1, tzinfo=timezone.utc), since, until)
+        assert not _in_window(datetime(2019, 1, 1, tzinfo=timezone.utc), since, until)
 
 
 class TestNormaliseDatetime:
