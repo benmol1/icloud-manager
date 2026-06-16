@@ -70,6 +70,15 @@ def run() -> None:
             scanner.ensure_authenticated()
             source = PyiCloudAssetSource(scanner.api)
 
+        cap = config.offload_max_items
+        cap_desc = f"{cap} (OFFLOAD_MAX_ITEMS)" if cap else "unlimited (OFFLOAD_MAX_ITEMS=0)"
+        logger.info(
+            "Offload settings: mode=%s, cap=%s, storage_tier=%s",
+            "dry-run" if config.dry_run else "LIVE",
+            cap_desc,
+            config.storage_tier,
+        )
+
         def _record_offload(result) -> None:
             # Called the moment each asset is offloaded, so an interrupted batch
             # leaves the index accurate rather than losing the whole run's work.
