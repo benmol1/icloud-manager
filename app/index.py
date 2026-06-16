@@ -376,6 +376,40 @@ class AssetIndex:
         total = self._conn.execute("SELECT count(*) AS n FROM assets").fetchone()["n"]
         return {"total": total, "by_status": by_status, "by_tier": by_tier}
 
+    def breakdown(self, *, status: str | None = None) -> list[dict[str, Any]]:
+        """Per-(year, source) file counts and sizes for a detailed library view.
+
+        Year is taken from ``captured_at``. Optionally filtered by ``status``
+        (e.g. ``in_icloud`` to ignore already-offloaded assets). Rows are sorted
+        by year then source; the CLI pivots them into a year x source grid.
+        """
+        params: dict[str, Any] = {}
+        where = ""
+        if status is not None:
+            where = "WHERE status = :status"
+            params["status"] = status
+        cur = self._conn.execute(
+            f"""
+            SELECT substr(captured_at, 1, 4) AS year,
+                   source,
+                   count(*)        AS files,
+                   sum(size_bytes) AS bytes
+            FROM assets {where}
+            GROUP BY year, source
+            ORDER BY year, source
+            """,
+            params,
+        )
+        return [
+            {
+                "year": row["year"],
+                "source": row["source"],
+                "files": row["files"],
+                "bytes": row["bytes"] or 0,
+            }
+            for row in cur.fetchall()
+        ]
+
     # -- mapping -------------------------------------------------------
 
     @staticmethod
@@ -458,11 +492,74 @@ def _format_bytes(n: int) -> str:
     return f"{gb:.2f} GB"
 
 
+def _human_size(n: int) -> str:
+    """Compact size for grid cells: ``42.0M`` / ``1.3G``."""
+    mb = n / 1024 / 1024
+    if mb < 1024:
+        return f"{mb:.1f}M"
+    return f"{mb / 1024:.1f}G"
+
+
+def _print_breakdown(rows: list[dict[str, Any]], status: str | None) -> None:
+    """Pivot flat (year, source) rows into a year x source grid with totals."""
+    scope = f" (status={status})" if status else ""
+    if not rows:
+        print(f"No assets in the index{scope}.")
+        return
+
+    sources = sorted({r["source"] for r in rows})
+    years = sorted({r["year"] for r in rows})
+    grid = {(r["year"], r["source"]): (r["files"], r["bytes"]) for r in rows}
+
+    year_w, col_w = 6, 16
+
+    def cell(files: int, byts: int) -> str:
+        return f"{files} / {_human_size(byts)}" if files else "-"
+
+    def line(label: str, get) -> str:
+        out = f"{label:<{year_w}}"
+        for s in sources:
+            out += f"{get(s):>{col_w}}"
+        return out
+
+    header = line("YEAR", lambda s: s) + f"{'TOTAL':>{col_w}}"
+    print(header)
+    print("-" * len(header))
+
+    col_totals = {s: [0, 0] for s in sources}
+    for y in years:
+        row_files = row_bytes = 0
+        out = f"{y:<{year_w}}"
+        for s in sources:
+            f, b = grid.get((y, s), (0, 0))
+            out += f"{cell(f, b):>{col_w}}"
+            row_files += f
+            row_bytes += b
+            col_totals[s][0] += f
+            col_totals[s][1] += b
+        out += f"{cell(row_files, row_bytes):>{col_w}}"
+        print(out)
+
+    print("-" * len(header))
+    total_files = sum(c[0] for c in col_totals.values())
+    total_bytes = sum(c[1] for c in col_totals.values())
+    footer = f"{'TOTAL':<{year_w}}"
+    for s in sources:
+        footer += f"{cell(*col_totals[s]):>{col_w}}"
+    footer += f"{cell(total_files, total_bytes):>{col_w}}"
+    print(footer)
+    print(f"\n{total_files} files / {_format_bytes(total_bytes)} across "
+          f"{len(years)} years{scope}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Query the iCloud asset index.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("stats", help="Summary counts by status")
+
+    b = sub.add_parser("breakdown", help="Year x source grid of files and size")
+    b.add_argument("--status", help="Filter by status, e.g. in_icloud | offloaded")
 
     s = sub.add_parser("search", help="Filtered lookup")
     s.add_argument("--source")
@@ -492,6 +589,8 @@ def main(argv: list[str] | None = None) -> None:
                             f"    └ {tier:8} {t_agg['files']:>7} files  "
                             f"{_format_bytes(t_agg['bytes'])}"
                         )
+        elif args.command == "breakdown":
+            _print_breakdown(index.breakdown(status=args.status), args.status)
         elif args.command == "search":
             rows = index.search(
                 source=args.source,

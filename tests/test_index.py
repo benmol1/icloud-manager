@@ -176,6 +176,39 @@ class TestStats:
         assert index.stats()["by_tier"]["unknown"]["files"] == 1
 
 
+class TestBreakdown:
+    def test_groups_by_year_and_source(self, index):
+        index.upsert_scored(
+            [
+                _scored(asset_id="a", source=Source.PHOTOS,
+                        created=datetime(2023, 5, 1, tzinfo=timezone.utc)),
+                _scored(asset_id="b", source=Source.PHOTOS,
+                        created=datetime(2023, 9, 1, tzinfo=timezone.utc)),
+                _scored(asset_id="c", source=Source.WHATSAPP,
+                        created=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+            ]
+        )
+        rows = index.breakdown()
+        assert rows == [
+            {"year": "2023", "source": "photos", "files": 2, "bytes": index.get("a")["size_bytes"] * 2},
+            {"year": "2024", "source": "whatsapp", "files": 1, "bytes": index.get("c")["size_bytes"]},
+        ]
+
+    def test_status_filter_excludes_offloaded(self, index):
+        index.upsert_scored(
+            [
+                _scored(asset_id="a", created=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+                _scored(asset_id="b", created=datetime(2024, 1, 1, tzinfo=timezone.utc)),
+            ]
+        )
+        index.mark_offloaded("a", "D:/x.jpg")
+        rows = index.breakdown(status="in_icloud")
+        assert [(r["year"], r["files"]) for r in rows] == [("2024", 1)]
+
+    def test_empty_index(self, index):
+        assert index.breakdown() == []
+
+
 class TestLastRefreshedAt:
     def test_none_when_empty(self, index):
         assert index.last_refreshed_at() is None
