@@ -13,6 +13,7 @@ approval flow (Phase 4).
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from app import actions
 from app.actions import OffloadStatus
@@ -130,20 +131,38 @@ def _describe_age(iso_ts: str | None) -> str:
     return f"{iso_ts} ({ago})"
 
 
-def main() -> None:
-    # Force UTF-8 on the log streams so non-ASCII characters in messages (—, ≈,
-    # …) survive redirection to a file on Windows, whose console/redirect default
-    # is the legacy cp1252 code page and would otherwise mangle them.
+def _configure_logging() -> Path:
+    """Log to the console *and* a timestamped UTF-8 file under ``logs/``.
+
+    The filename is ``<live|dryrun>_YYYYMMDD_HHMMSS.log`` so each run is kept
+    and it's obvious at a glance whether files actually moved. Returns the path.
+    """
+    # Force UTF-8 on the console streams too, so non-ASCII characters in messages
+    # (—, ≈, …) survive redirection on Windows, whose console/redirect default is
+    # the legacy cp1252 code page and would otherwise mangle them.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
         except (AttributeError, ValueError):
             pass
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    prefix = "dryrun" if config.dry_run else "live"
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    logging.basicConfig(level=logging.INFO, handlers=[console, file_handler])
+    return log_path
+
+
+def main() -> None:
+    log_path = _configure_logging()
+    logger.info("Logging to %s", log_path)
     run()
 
 

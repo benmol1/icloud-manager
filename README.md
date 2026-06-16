@@ -71,7 +71,7 @@ not available** from iCloud's metadata — see
 # Summary counts by status (in_icloud / offloaded)
 uv run python -m app.index stats
 
-# Filtered lookup
+# Filtered lookup (limited to max 50 results by default)
 uv run python -m app.index search --source whatsapp --status in_icloud
 uv run python -m app.index search --media-type video --since 2020-01-01 --until 2020-12-31
 ```
@@ -135,7 +135,8 @@ uv run python -m app.twofactor
 # One-off scan from the CLI
 uv run python -m app.scanner
 
-# Run the full service
+# Run the full service (also writes a timestamped log to logs/:
+# dryrun_*.log or live_*.log depending on DRY_RUN)
 uv run python -m app.main
 
 # Tests
