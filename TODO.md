@@ -1,6 +1,6 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-14 16:34*
+*Last updated: 2026-06-15 11:48*
 
 ## MVP Scope
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
@@ -31,10 +31,19 @@ Build a Dockerised Python service that scans iCloud photo/video storage weekly, 
 - [x] ~~Review auto-offload rules with Emma~~ — N/A: project now scopes to Ben's account only. Rules finalised: auto-offload requires non-favourite + WhatsApp-origin + ≥ `min_age_days` (180). `min_age_days` is now actually enforced (was previously unused).
 - [x] Write unit tests for scoring logic with fixture data
 
-## Dry-run Findings & Tuning (2026-06-14) ⏳ IN PROGRESS
+## Dry-run Findings & Tuning (2026-06-14) ✅ COMPLETE
 *From the first full dry run against the live library (~17.5k assets): 1,158 auto-offload, 8,769 review, ~7,500 keep.*
-- [ ] Make the review bucket manageable — the dry run sent **8,769 assets (half the library)** to review, far too many for the per-item Telegram Approve/Skip flow. Raise `review_threshold` and/or rethink the review UX (e.g. top-N by size, batch approval by album/category, or treat review as informational rather than per-item approval)
+- [x] Make the review bucket manageable — the review bucket is now ranked by reclaimable size (largest first) and capped per run via `REVIEW_MAX_ITEMS` (default 50; 0 = unlimited) in [`recommender._prioritise_review`](app/recommender.py). Overflow goes to a `review_deferred` bucket that resurfaces in later runs as the surfaced items get actioned — so the weekly Telegram Approve/Skip flow is bounded and front-loads the biggest space wins instead of dumping ~8,769 items at once. Summary + `main.py` log report the deferred count; 5 new unit tests; suite green (86 passed). *Note: the size-ranked cap is independent of the better dedup just landed, which should also trim review over time.*
 - [x] Use human-readable filenames for offload destinations — investigated against the live account: camera-roll assets already decode to real names (`IMG_2351.JPG`); only app-saved media (WhatsApp/AirDrop) genuinely has opaque UUID filenames in iCloud (the UUID *is* the real filename, not a decode bug). Implemented [`actions._offload_filename`](app/actions.py): keeps meaningful names as-is, synthesises a sortable `YYYYMMDD_HHMMSS_<source>_<short>.ext` for UUID-stem names. 3 unit tests; suite green (57 passed)
+
+## Next: Verification & Small-Scale Live Test 🎯 NEXT UP
+*Immediate priority before building the notifier. First confirm the whole
+pipeline still connects after the dedup + review-cap changes, then prove a real
+offload works end-to-end on a small, scoped slice.*
+- [ ] **Full dry run** to confirm everything connects — run `uv run python -m app.main` against the live library and verify the full chain works after the recent changes: scan → fingerprint-based dedup → analyse → size-ranked + capped review bucket → index upsert → dry-run offload. Sanity-check the new numbers (auto-offload / review / **deferred** / keep counts + MB) and that the index is populated. No files moved (dry run).
+- [ ] **Small-scale live test on one year** — pick a single year via `SCAN_SINCE`/`SCAN_UNTIL` (e.g. `2020-01-01`..`2020-12-31`) and do a *real* offload with `DRY_RUN=false`: confirm the auto-offload assets are downloaded, written to the SMB/network-storage `YYYY/MM/` folders, **then** deleted from iCloud (write-before-delete), and the index records `offloaded` + `local_path`. Verify file counts/bytes match on both sides and spot-check a few files open correctly.
+  - **Blocked on**: wiring the concrete pyicloud `AssetSource` — [`main.py`](app/main.py) currently forces dry-run even when `DRY_RUN=false` because live download/delete isn't wired yet (the [`AssetSource`](app/actions.py) seam exists but has no pyicloud implementation). This must land before a live test is possible.
+  - Start tiny: scope to a low-risk slice and/or a handful of files first; confirm on the network drive before widening.
 
 ## Scanner Performance & UX ⏳ IN PROGRESS
 *Library baseline: ~16,000 photos + ~1,500 videos (~50 GB). First full scan is two paginated metadata sweeps — slow only the first time.*
@@ -84,7 +93,7 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
 - [x] Extend the scanner to populate the richer index columns — [`scanner._extract_rich_metadata`](app/scanner.py) does best-effort extraction of location/`added_date`/`file_type`/`is_hidden`/`is_live_photo`/`caption`/dimensions/`duration`/`subtype`/`hdr_type`/`has_adjustments`/`fingerprint`/`change_tag`/`tz_offset`/`master_id`; [`Asset`](app/models.py) carries them and [`index.upsert_scored`](app/index.py) persists them. (EXIF device/lens still excluded — separate offload-time item)
   - GPS is decoded from the `locationEnc` **binary plist** (`lat`/`lon`) — iCloud leaves the plain `locationLatitude`/`longitude` fields empty. Verified on real data ([`scanner._extract_location`](app/scanner.py)).
   - Verified by the **2020 dry run** (`SCAN_SINCE/UNTIL`): 400 in-window assets indexed; `added_at`/`fingerprint`/`change_tag`/dimensions/`duration`/`file_type`/`is_live_photo`/`subtype`/`master_id` all 400/400; `tz_offset` 369/400; location decoded; caption genuinely empty.
-- [ ] Switch duplicate detection to fingerprint-based — **now unblocked** (scanner stores `fingerprint`) — replace the weak `(size, creation-minute)` heuristic in [`analyser._find_duplicate_ids`](app/analyser.py#L84) with Apple's `resOriginalFingerprint` content hash (stored as the index `fingerprint` column); group by fingerprint for true duplicate detection
+- [x] Switch duplicate detection to fingerprint-based — [`analyser._find_duplicate_ids`](app/analyser.py) now groups by Apple's `resOriginalFingerprint` content hash (`Asset.fingerprint`) for true byte-for-byte duplicate detection. Assets without a fingerprint (older / app-saved media iCloud doesn't hash) fall back to the old `(size, creation-minute)` heuristic; the two key spaces are namespaced so they never collide. 5 new unit tests; suite green (81 passed)
 
 ## Deferred / Future
 - [ ] Web dashboard for browsing recommendations
