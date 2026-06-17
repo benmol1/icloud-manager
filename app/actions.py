@@ -8,6 +8,7 @@ in which it computes destinations and logs what it *would* do without touching
 the filesystem or iCloud.
 """
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass
@@ -41,6 +42,7 @@ class AssetSource(Protocol):
 class OffloadStatus(str, Enum):
     WOULD_OFFLOAD = "would_offload"  # dry-run only
     OFFLOADED = "offloaded"
+    ALREADY_ARCHIVED = "already_archived"  # identical bytes already on disk; not re-written
     FAILED = "failed"
 
 
@@ -85,6 +87,14 @@ def offload(
     if max_items and max_items > 0:
         items = items[:max_items]
 
+    # Content-dedup: index the destination tree by file size so a downloaded
+    # asset whose bytes already exist on disk (under any name/path — filenames
+    # don't survive the iCloud→archive round-trip) is skipped instead of stored
+    # twice. Size is the cheap pre-filter; the SHA-256 check only runs on a size
+    # collision. Built once per run (live mode only — dry-run never downloads).
+    size_index: dict[int, list[Path]] = {} if dry_run else _build_size_index(base)
+    hash_cache: dict[Path, str] = {}
+
     for item in items:
         asset = item.asset
         dest = _unique_destination(_destination_path(asset, base), reserved)
@@ -95,11 +105,16 @@ def offload(
             results.append(_result(asset, dest, OffloadStatus.WOULD_OFFLOAD))
             continue
 
-        result = _do_offload(item, dest, source)
+        result = _do_offload(item, dest, source, size_index, hash_cache)
         results.append(result)
         # Record success immediately so an interrupted batch leaves an accurate,
-        # resumable index rather than losing every offload done this run.
-        if on_offloaded is not None and result.status == OffloadStatus.OFFLOADED:
+        # resumable index rather than losing every offload done this run. An
+        # already-archived asset is just as "done" (bytes safe on disk + removed
+        # from iCloud), so it's recorded the same way, pointing at the existing copy.
+        if on_offloaded is not None and result.status in (
+            OffloadStatus.OFFLOADED,
+            OffloadStatus.ALREADY_ARCHIVED,
+        ):
             on_offloaded(result)
 
     return results
@@ -110,7 +125,11 @@ def offload(
 # ------------------------------------------------------------------
 
 def _do_offload(
-    item: ScoredAsset, dest: Path, source: AssetSource | None
+    item: ScoredAsset,
+    dest: Path,
+    source: AssetSource | None,
+    size_index: dict[int, list[Path]],
+    hash_cache: dict[Path, str],
 ) -> OffloadResult:
     asset = item.asset
     if source is None:
@@ -120,11 +139,39 @@ def _do_offload(
 
     try:
         data = source.download(asset)
+    except Exception as exc:  # noqa: BLE001 — report, never delete on failure
+        logger.exception("Failed to download %s", asset.filename)
+        return _result(asset, dest, OffloadStatus.FAILED, str(exc))
+
+    # If these exact bytes already live in the archive, don't store a second
+    # copy — point at the existing file and still reclaim the iCloud space.
+    digest = hashlib.sha256(data).hexdigest()
+    existing = _find_duplicate(digest, len(data), size_index, hash_cache)
+    if existing is not None:
+        try:
+            source.delete(asset)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Found duplicate of %s but failed to delete from iCloud", asset.filename)
+            return _result(
+                asset, existing, OffloadStatus.FAILED,
+                f"identical to {existing} but not deleted: {exc}",
+            )
+        logger.info(
+            "Skipped %s — identical content already archived at %s", asset.filename, existing
+        )
+        return _result(asset, existing, OffloadStatus.ALREADY_ARCHIVED)
+
+    try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-    except Exception as exc:  # noqa: BLE001 — report, never delete on failure
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to write %s to %s", asset.filename, dest)
         return _result(asset, dest, OffloadStatus.FAILED, str(exc))
+
+    # Register the new file so a later identical asset in the *same* batch dedups
+    # against it (the on-disk index was snapshotted before the run started).
+    size_index.setdefault(len(data), []).append(dest)
+    hash_cache[dest] = digest
 
     # Only delete from iCloud once the local copy is safely written.
     try:
@@ -137,6 +184,49 @@ def _do_offload(
 
     logger.info("Offloaded %s -> %s", asset.filename, dest)
     return _result(asset, dest, OffloadStatus.OFFLOADED)
+
+
+def _build_size_index(base: Path) -> dict[int, list[Path]]:
+    """Map ``size_bytes -> [path, ...]`` for every file under *base*.
+
+    The cheap pre-filter for content-dedup: only files sharing an asset's exact
+    byte size are candidates for a SHA-256 comparison. Returns empty when the
+    archive root doesn't exist yet (first ever offload).
+    """
+    index: dict[int, list[Path]] = {}
+    if not base.exists():
+        return index
+    for path in base.rglob("*"):
+        try:
+            if path.is_file():
+                index.setdefault(path.stat().st_size, []).append(path)
+        except OSError:  # noqa: PERF203 — skip unreadable entries, keep going
+            continue
+    return index
+
+
+def _find_duplicate(
+    digest: str,
+    size: int,
+    size_index: dict[int, list[Path]],
+    hash_cache: dict[Path, str],
+) -> Path | None:
+    """Return an existing archive file whose bytes equal *digest*, or ``None``.
+
+    Only files of the same *size* are hashed (and each is hashed at most once,
+    cached in *hash_cache*), so the common no-collision case costs nothing.
+    """
+    for path in size_index.get(size, []):
+        cached = hash_cache.get(path)
+        if cached is None:
+            try:
+                cached = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError:
+                continue
+            hash_cache[path] = cached
+        if cached == digest:
+            return path
+    return None
 
 
 def _destination_path(asset: Asset, base: Path) -> Path:

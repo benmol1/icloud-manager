@@ -40,10 +40,15 @@ class FakeSource:
         self.downloaded: list[str] = []
         self.deleted: list[str] = []
 
+    # Optional fixed payload so two assets can be made byte-identical (for dedup).
+    payload: bytes | None = None
+
     def download(self, asset: Asset) -> bytes:
         if self.fail_download:
             raise RuntimeError("download boom")
         self.downloaded.append(asset.asset_id)
+        if self.payload is not None:
+            return self.payload
         return b"file-bytes-for-" + asset.asset_id.encode()
 
     def delete(self, asset: Asset) -> None:
@@ -250,6 +255,94 @@ class TestLiveOffload:
         offload(items, dry_run=False, source=source, mount_path=str(tmp_path))
         files = sorted(p.name for p in (tmp_path / "2023" / "07").iterdir())
         assert files == ["IMG-0001 (1).jpg", "IMG-0001.jpg"]
+
+
+# ------------------------------------------------------------------
+# Content dedup
+# ------------------------------------------------------------------
+
+class TestContentDedup:
+    def test_skips_write_when_identical_bytes_already_archived(self, tmp_path):
+        # Pre-seed the archive with a file under a *different* name/folder than
+        # the offload would choose, proving dedup is by content not by path.
+        existing = tmp_path / "2019" / "11" / "old-name.jpg"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"identical-photo-bytes")
+
+        source = FakeSource()
+        source.payload = b"identical-photo-bytes"
+        results = offload(
+            [_scored(filename="IMG-0001.jpg")],
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+        )
+        assert results[0].status == OffloadStatus.ALREADY_ARCHIVED
+        assert results[0].destination == str(existing)
+        # No new copy written under the offload's year/month…
+        assert not (tmp_path / "2023" / "07" / "IMG-0001.jpg").exists()
+        # …but the iCloud copy is still removed (space reclaimed).
+        assert source.deleted == ["abc123"]
+
+    def test_same_size_different_bytes_is_not_a_duplicate(self, tmp_path):
+        existing = tmp_path / "2019" / "11" / "old-name.jpg"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"AAAAAAAA")  # 8 bytes
+
+        source = FakeSource()
+        source.payload = b"BBBBBBBB"  # same length, different content
+        results = offload(
+            [_scored(filename="IMG-0001.jpg")],
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+        )
+        assert results[0].status == OffloadStatus.OFFLOADED
+        assert (tmp_path / "2023" / "07" / "IMG-0001.jpg").read_bytes() == b"BBBBBBBB"
+
+    def test_already_archived_fires_on_offloaded(self, tmp_path):
+        existing = tmp_path / "2019" / "11" / "old.jpg"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"dup-bytes")
+
+        source = FakeSource()
+        source.payload = b"dup-bytes"
+        recorded: list[str] = []
+        offload(
+            [_scored()],
+            dry_run=False,
+            source=source,
+            mount_path=str(tmp_path),
+            on_offloaded=lambda r: recorded.append(r.asset_id),
+        )
+        assert recorded == ["abc123"]
+
+    def test_in_batch_duplicate_is_deduped(self, tmp_path):
+        # Two distinct assets with identical content: the first is written, the
+        # second is recognised as already archived (registered mid-batch).
+        source = FakeSource()
+        source.payload = b"same-content-twice"
+        items = [
+            _scored(asset_id="a", filename="IMG-0001.jpg"),
+            _scored(asset_id="b", filename="IMG-0002.jpg"),
+        ]
+        results = offload(items, dry_run=False, source=source, mount_path=str(tmp_path))
+        statuses = [r.status for r in results]
+        assert statuses == [OffloadStatus.OFFLOADED, OffloadStatus.ALREADY_ARCHIVED]
+        assert len(list(tmp_path.rglob("*.jpg"))) == 1
+
+    def test_duplicate_delete_failure_reports_and_keeps_icloud(self, tmp_path):
+        existing = tmp_path / "2019" / "11" / "old.jpg"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"dup-bytes")
+
+        source = FakeSource(fail_delete=True)
+        source.payload = b"dup-bytes"
+        results = offload(
+            [_scored()], dry_run=False, source=source, mount_path=str(tmp_path)
+        )
+        assert results[0].status == OffloadStatus.FAILED
+        assert source.deleted == []
 
 
 # ------------------------------------------------------------------
