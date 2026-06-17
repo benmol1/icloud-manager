@@ -353,3 +353,64 @@ class TestMigration:
         with AssetIndex(db) as idx:
             cols = {r["name"] for r in idx._conn.execute("PRAGMA table_info(assets)")}
             assert "storage_tier" in cols
+
+
+# ------------------------------------------------------------------
+# Archive-file indexing
+# ------------------------------------------------------------------
+
+def _archive_record(asset_id="local:2019/05/x.jpg", **kw):
+    rec = {
+        "asset_id": asset_id,
+        "filename": "x.jpg",
+        "size_bytes": 1234,
+        "media_type": "image",
+        "source": "photos",
+        "captured_at": "2019-05-01T00:00:00+00:00",
+        "local_path": r"D:\icloud-photos\2019\05\x.jpg",
+    }
+    rec.update(kw)
+    return rec
+
+
+class TestArchiveIndexing:
+    def test_inserts_with_archived_status(self, index):
+        n = index.upsert_archive_files([_archive_record()])
+        assert n == 1
+        row = index.get("local:2019/05/x.jpg")
+        assert row["status"] == "archived"
+        assert row["storage_tier"] == "local"
+        assert row["captured_at"] == "2019-05-01T00:00:00+00:00"
+
+    def test_archived_files_appear_in_stats_and_breakdown(self, index):
+        index.upsert_archive_files([
+            _archive_record(asset_id="local:2019/05/a.jpg"),
+            _archive_record(asset_id="local:2020/01/b.mp4",
+                            media_type="video", captured_at="2020-01-01T00:00:00+00:00"),
+        ])
+        stats = index.stats()
+        assert stats["by_status"]["archived"]["files"] == 2
+        years = {r["year"] for r in index.breakdown(status="archived")}
+        assert years == {"2019", "2020"}
+
+    def test_rerun_is_idempotent_and_preserves_first_seen(self, index):
+        index.upsert_archive_files([_archive_record()], seen_at="2026-01-01T00:00:00+00:00")
+        first = index.get("local:2019/05/x.jpg")["first_seen_at"]
+        # Re-run with a new size + later timestamp.
+        index.upsert_archive_files(
+            [_archive_record(size_bytes=9999)], seen_at="2026-02-02T00:00:00+00:00"
+        )
+        row = index.get("local:2019/05/x.jpg")
+        assert index.stats()["total"] == 1          # no duplicate row
+        assert row["size_bytes"] == 9999             # refreshed
+        assert row["first_seen_at"] == first         # preserved
+        assert row["last_seen_at"] == "2026-02-02T00:00:00+00:00"
+
+    def test_known_local_paths_normalises(self, index):
+        index.upsert_archive_files([_archive_record()])
+        paths = index.known_local_paths()
+        import os
+        assert os.path.normpath(r"D:\icloud-photos\2019\05\x.jpg") in paths
+
+    def test_empty_records_is_noop(self, index):
+        assert index.upsert_archive_files([]) == 0

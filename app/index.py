@@ -227,6 +227,62 @@ class AssetIndex:
                 },
             )
 
+    def upsert_archive_files(
+        self, records: Iterable[dict[str, Any]], *, seen_at: str | None = None
+    ) -> int:
+        """Insert/refresh local-archive files that were never in our iCloud flow.
+
+        Each record describes one on-disk file (``asset_id``, ``filename``,
+        ``size_bytes``, ``media_type``, ``source``, ``captured_at``,
+        ``local_path``, ``storage_tier``) and is stored with ``status='archived'``
+        — distinct from ``offloaded`` (which means *we* moved it off iCloud). Keyed
+        by ``asset_id`` so re-running is idempotent: an existing row's mutable
+        fields are refreshed, ``first_seen_at`` is preserved. Returns the count.
+        """
+        seen_at = seen_at or _now_iso()
+        rows = [{**r, "first_seen_at": seen_at, "last_seen_at": seen_at} for r in records]
+        if not rows:
+            return 0
+
+        cols = (
+            "asset_id", "filename", "size_bytes", "media_type", "source",
+            "captured_at", "status", "local_path", "storage_tier",
+            "first_seen_at", "last_seen_at",
+        )
+        for r in rows:
+            r.setdefault("status", "archived")
+            r.setdefault("storage_tier", "local")
+        columns = ", ".join(cols)
+        placeholders = ", ".join(f":{c}" for c in cols)
+        # On re-run, refresh only what can change on disk; never touch first_seen_at.
+        update = ", ".join(
+            f"{c}=excluded.{c}"
+            for c in ("filename", "size_bytes", "media_type", "source",
+                      "captured_at", "status", "local_path", "storage_tier",
+                      "last_seen_at")
+        )
+        sql = f"""
+            INSERT INTO assets ({columns})
+            VALUES ({placeholders})
+            ON CONFLICT(asset_id) DO UPDATE SET {update}
+        """
+        with self._conn:
+            self._conn.executemany(sql, rows)
+        return len(rows)
+
+    def known_local_paths(self) -> set[str]:
+        """Normalised ``local_path`` values already recorded (any status).
+
+        Used to skip files the offload pipeline already tracks so they aren't
+        re-indexed as separate archive rows.
+        """
+        import os
+
+        cur = self._conn.execute(
+            "SELECT local_path FROM assets WHERE local_path IS NOT NULL"
+        )
+        return {os.path.normpath(r["local_path"]) for r in cur.fetchall()}
+
     # -- reads ---------------------------------------------------------
 
     def get(self, asset_id: str) -> sqlite3.Row | None:

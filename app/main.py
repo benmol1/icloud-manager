@@ -96,12 +96,19 @@ def run() -> None:
             on_offloaded=_record_offload,
         )
         offloaded = [r for r in results if r.status == OffloadStatus.OFFLOADED]
+        already = [r for r in results if r.status == OffloadStatus.ALREADY_ARCHIVED]
         failed = [r for r in results if r.status == OffloadStatus.FAILED]
 
         verb = "would be moved (dry-run)" if config.dry_run else "moved"
         logger.info("Auto-offload: %d assets %s", len(results), verb)
         if offloaded:
             logger.info("Recorded %d confirmed offloads in the index", len(offloaded))
+        if already:
+            logger.info(
+                "Skipped %d assets already present in the archive (identical bytes) "
+                "— removed from iCloud, no duplicate written",
+                len(already),
+            )
         if failed:
             logger.warning("%d offloads FAILED (iCloud copy left intact):", len(failed))
             for result in failed:
