@@ -179,6 +179,11 @@ def _configure_logging() -> Path:
 def main() -> None:
     log_path = _configure_logging()
     logger.info("Logging to %s", log_path)
+    try:
+        config.validate()
+    except EnvironmentError as exc:
+        logger.error("Configuration error: %s", exc)
+        raise SystemExit(1)
     run()
 
 
