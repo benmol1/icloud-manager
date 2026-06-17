@@ -1,8 +1,28 @@
 # iCloud Manager — Project TODO
 
-*Last updated: 2026-06-17 10:16*
+*Last updated: 2026-06-17 11:38*
 
-## MVP Scope
+## 🅿️ Project Status — SHELVED (2026-06-17), primary objective achieved
+The original goal is **done**: a large slice of the live iCloud library has been
+offloaded into an organised `YYYY/MM` folder structure on `D:\icloud-photos`,
+content-deduped, and recorded in a searchable SQLite index — and iCloud now has
+plenty of free space again. Pausing here.
+
+**Two original goals are being dropped, not deferred:**
+1. **Telegram notifier / manual Approve-Skip flow — dropped.** There's no real
+   scenario where manually approving each file one-by-one is worth it; the
+   auto-offload + content-dedup pipeline does the job unattended.
+2. **`local` vs `network` storage tier — no longer a concern.** It doesn't
+   matter much where a given asset physically lives now that there's an easy
+   *programmatic* way to move assets between iCloud / local / network (which
+   exists today). Keep the `storage_tier` column, but stop treating the
+   distinction as something to optimise around.
+
+The interesting future work has shifted from *storage management* to
+**memory curation** — see "Future Direction" at the bottom. If/when the project
+is resumed, start there, not with the deployment phases.
+
+## MVP Scope (original — largely met)
 Build a Dockerised Python service that scans iCloud photo/video storage weekly, scores assets, and pushes recommendations + auto-actions via Telegram.
 
 ---
@@ -70,12 +90,15 @@ offload works end-to-end on a small, scoped slice.*
 - [x] **Config read from env in `__init__`** — [`Config`](app/config.py) now reads env vars on construction (not at class-definition time), so a fresh `Config()` reflects the current environment and tests can `monkeypatch.setenv/delenv` without `importlib.reload`. Fixes the long-standing `test_dry_run_defaults_true` failure (it broke whenever `.env` set `DRY_RUN=false`, because reload re-ran `load_dotenv`). Suite fully green (132 passed).
   - **Gotcha learned:** `load_dotenv(override=False)` means a real shell env var beats `.env`. A lingering `$env:OFFLOAD_MAX_ITEMS=50` in the PowerShell session silently capped a run to 50 despite `.env` saying 200. Correct precedence for Docker (real env wins) — clear the session var / use a fresh terminal; the new settings log now makes the mismatch visible.
 
-## Phase 4 — Telegram Notifier
-- [ ] Create Telegram bot via BotFather and record token + chat ID
-- [ ] Implement `notifier.py` — send weekly summary report
-- [ ] Add inline keyboard buttons for review-bucket approvals (Approve / Skip)
-- [ ] Handle approval callbacks and trigger `actions.py` accordingly
-- [ ] Test bot locally before deploying to Pi
+## Phase 4 — Telegram Notifier ❌ DROPPED
+*Dropped on 2026-06-17 — manually approving offloads one-by-one isn't worth it;
+the unattended auto-offload + content-dedup pipeline covers the need. Kept here
+for the record, not planned.*
+- [ ] ~~Create Telegram bot via BotFather and record token + chat ID~~
+- [ ] ~~Implement `notifier.py` — send weekly summary report~~
+- [ ] ~~Add inline keyboard buttons for review-bucket approvals (Approve / Skip)~~
+- [ ] ~~Handle approval callbacks and trigger `actions.py` accordingly~~
+- [ ] ~~Test bot locally before deploying to Pi~~
 
 ## Phase 5 — Offload Actions ⏳ IN PROGRESS
 - [x] Implement `actions.py` — download asset from iCloud, write to SMB share path (live download/delete via an `AssetSource` seam; concrete pyicloud source still to wire)
@@ -86,23 +109,27 @@ offload works end-to-end on a small, scoped slice.*
 - [x] **Durable per-asset offload marking** — [`actions.offload`](app/actions.py) gained an `on_offloaded` callback fired the instant each asset succeeds; [`main.run`](app/main.py) uses it to `mark_offloaded` immediately instead of after the whole batch. Previously an interrupted batch lost *all* offload records (the first live test was Ctrl-C'd at file 11/50 and the index recorded nothing). 4 new tests.
 - [x] **Tested with a small live batch** — first real offload (cap 50) ran against the live account; surfaced and fixed the two issues above. 10 files genuinely offloaded before the interrupt were reconciled into the index (`status=offloaded`, `storage_tier=local`) via a one-off matching their log destinations. **Note:** `D:\icloud-photos` is Ben's existing 20,873-file photo archive (2014–2024, robocopied to `P:` — see `copy_log.txt`), so the offload target already holds a parallel library; decide how that interacts with the auto-offload set before the full 1,236 run. *(Resolved — see "Before the Full Offload Run": merge into the archive, guarded by content-dedup.)*
 - [x] **Content-dedup guard at offload time** — [`actions._do_offload`](app/actions.py) SHA-256s the downloaded bytes and skips the write if identical content already exists in the destination tree (size-prefiltered, hashes cached, in-batch dupes registered as they're written). New `ALREADY_ARCHIVED` status: the iCloud copy is still deleted (space reclaimed) and the index is marked offloaded against the existing path. Makes merging into the archive safe (the ~168 overlaps + re-saved app media aren't double-stored). 5 new tests; suite green (137 passed).
-- [ ] Capture EXIF camera metadata (device make/model, lens, aperture, ISO, focal length) opportunistically during offload — this is NOT in iCloud's CloudKit metadata, only inside the downloaded file, so parse it (Pillow/exifread/exiftool) while we already have the bytes and store into the nullable `device_make`/`device_model`/`lens`/`aperture`/`iso`/`focal_length` index columns. Don't bulk-download assets just to harvest EXIF; often absent on screenshots / WhatsApp / older photos
-- [ ] Capture EXIF camera metadata (device make/model, lens, aperture, ISO, focal length) opportunistically during offload — this is NOT in iCloud's CloudKit metadata, only inside the downloaded file, so parse it (Pillow/exifread/exiftool) while we already have the bytes and store into the nullable `device_make`/`device_model`/`lens`/`aperture`/`iso`/`focal_length` index columns. Don't bulk-download assets just to harvest EXIF; often absent on screenshots / WhatsApp / older photos
+- [ ] Capture EXIF camera metadata (device make/model, lens, aperture, ISO, focal length) opportunistically during offload — this is NOT in iCloud's CloudKit metadata, only inside the downloaded file, so parse it (Pillow/exifread/exiftool) while we already have the bytes and store into the nullable `device_make`/`device_model`/`lens`/`aperture`/`iso`/`focal_length` index columns. Don't bulk-download assets just to harvest EXIF; often absent on screenshots / WhatsApp / older photos. **→ Now a priority for the curation goal — see Future Direction. `device_make`/`device_model` in particular is the cheapest way to filter "shot on our phones (Ben/Emma)" vs received/other-people's media.**
 
-## Phase 6 — Scheduler ⏳ IN PROGRESS
+## Phase 6 — Scheduler ⏸️ ON HOLD
+*On hold — an unattended weekly cron made sense for the "manage storage forever"
+framing; with the storage goal met and the notifier dropped, on-demand CLI runs
+are enough for now. Manual run already works.*
 - [ ] Implement `scheduler.py` — weekly trigger using APScheduler
-- [ ] Wire up full pipeline: scan → analyse → recommend → notify → act (notify/live-act still missing)
+- [ ] ~~Wire up full pipeline: scan → analyse → recommend → notify → act~~ (notify dropped)
 - [x] Add manual trigger endpoint or CLI flag for on-demand runs (`uv run python -m app.main`)
 - [x] Add `app/main.py` end-to-end runner: scan → analyse → recommend → dry-run offload
 
-## Phase 7 — Pi Deployment
-- [ ] Set up SMB share on Windows PC (share the 2 TB drive)
+## Phase 7 — Pi Deployment ⏸️ ON HOLD
+*On hold — not needed while runs are on-demand from this PC. The whole point of
+the Pi was the always-on weekly service; revisit only if that's wanted again.*
+- [x] Set up SMB share on Windows PC (share the 2 TB drive)
 - [ ] Configure Pi to mount SMB share (or use Docker volume mount)
 - [ ] Copy `.env` to Pi with `chmod 600`
 - [ ] Deploy with `docker compose up -d` and verify weekly schedule fires
-- [ ] Test end-to-end: scan → Telegram message received → approval → file appears on Windows drive
+- [ ] Test end-to-end: scan → file appears on Windows drive
 
-## Searchable Asset Index 🔍 ⏳ IN PROGRESS
+## Searchable Asset Index 🔍 ✅ COMPLETE
 Goal: a searchable, persistent index of **every** asset in iCloud, plus a record
 of which assets we've offloaded to local storage and where they ended up. Useful
 for "where did file X go?", auditing actions, and avoiding re-processing.
@@ -117,8 +144,44 @@ for "where did file X go?", auditing actions, and avoiding re-processing.
   - Verified by the **2020 dry run** (`SCAN_SINCE/UNTIL`): 400 in-window assets indexed; `added_at`/`fingerprint`/`change_tag`/dimensions/`duration`/`file_type`/`is_live_photo`/`subtype`/`master_id` all 400/400; `tz_offset` 369/400; location decoded; caption genuinely empty.
 - [x] Switch duplicate detection to fingerprint-based — [`analyser._find_duplicate_ids`](app/analyser.py) now groups by Apple's `resOriginalFingerprint` content hash (`Asset.fingerprint`) for true byte-for-byte duplicate detection. Assets without a fingerprint (older / app-saved media iCloud doesn't hash) fall back to the old `(size, creation-minute)` heuristic; the two key spaces are namespaced so they never collide. 5 new unit tests; suite green (81 passed)
 - [x] Add `storage_tier` column (`local` / `network`) to record where each offloaded asset lives — schema migration for existing DBs, `mark_offloaded(storage_tier=)`, `by_tier` breakdown in `stats()` output, `--tier` filter in the search CLI, and `STORAGE_TIER` config key. `.env` defaults to `local` (this PC's D:); Pi deployment will use `network`. 101 tests green.
+- [x] **Index the pre-existing `D:\icloud-photos` archive into the index** — [`scripts/index_archive.py`](scripts/index_archive.py) + [`index.py`](app/index.py) ingest the ~20,862 existing archive files as `status='archived'` (path-based id, capture dates inferred from `YYYY/MM` folders), skipping files already recorded as `offloaded`, so `stats`/`breakdown`/`search` cover both the live iCloud library and the historical archive in one index.
 
-## Deferred / Future
+## Deferred / Future (storage-management era)
 - [ ] Web dashboard for browsing recommendations
 - [ ] Statistics over time (storage freed, assets offloaded)
 - [x] **True content-dedup for app-saved media** — done as the offload-time SHA-256 guard (see Phase 5). [`actions._do_offload`](app/actions.py) hashes the downloaded bytes and, if an identical file already exists in the archive (size-prefiltered via `_build_size_index`), skips the write and reports `ALREADY_ARCHIVED` — catching genuine content duplicates (incl. the same WhatsApp file saved multiple times) regardless of `resOriginalFingerprint`/date.
+
+---
+
+## 🎯 Future Direction — Memory Curation & Photo Books (the real prize)
+*Captured 2026-06-17 while shelving the project. This is where to pick up if/when
+resumed. The storage-offload machinery (scan → index → dedup → organised archive)
+is now a solid **foundation**; the goal shifts to turning that organised library
+into curated outputs. The headline ambition:*
+
+> **Efficiently produce a photo book for Emma as a Christmas present each year**
+> — a yearbook-style look back at the year's highlights — plus per-person video
+> reels — with the boring curation (finding the *good*, *relevant* photos)
+> largely automated.
+
+### Richer searchable metadata
+- [ ] **EXIF capture during offload** (promoted from Phase 5) — get `device_make`/`device_model` especially, so we can filter **"shot on Ben's or Emma's device"** vs photos received from / taken by other people. This is the cheapest, most reliable "is this our photo?" signal we have without ML.
+
+### Face & place tagging — lean on the Mac, don't build ML
+- [ ] **Research spike: harvest face/place tags from the macOS Photos app** instead of building our own facial recognition. Idea: run the library through Photos on a Mac, let Apple's built-in face-tagging + place/scene recognition do the work, then **re-capture those tags back into our index**. Spike should establish the cleanest extraction path, e.g.:
+  - Read the Photos library SQLite DB directly (`Photos.sqlite` / `photos.db` in the `.photoslibrary` bundle) for person/face + place rows.
+  - Or the AppleScript / `osxphotos` (Python) route, which already exposes persons, keywords, places, albums.
+  - Decide how to **join** Mac-Photos assets back to our index rows (UUID? filename? capture date + size? — note our earlier finding that size is the only reliable join key against the archive).
+  - *Explicitly out of scope: rolling our own image ML for faces — overkill when the Mac does it for free.*
+
+### Multi-account consolidation (Ben + Emma)
+- [ ] **Reconcile and merge Ben's and Emma's iCloud libraries** into one curated pool for book/reel building. *(NB: supersedes the earlier "single-account, Emma out of scope" decision — that was for the offload/storage policy; curation genuinely needs both libraries.)* Reuse the existing reconcile/dedup machinery ([`scripts/reconcile_archive.py`](scripts/reconcile_archive.py), content-dedup) to combine without double-storing the many shared photos.
+
+### Curation / ranking for "our family" moments
+- [ ] **Define a "people we care about" priority model** — surface photos that include **our kids (Phoebe, Zoe) and our parents/siblings** first. Likely built on the harvested face tags above.
+- [ ] **Context priority bias** — holiday photos rank above home / nursery photos for the yearbook. Use location (we already decode GPS from `locationEnc`) + date clustering to detect trips/holidays vs everyday.
+- [ ] **Highlight selection** — from the ranked pool, pick a manageable, representative set per year (de-duped, best-of bursts, spread across events) suitable for a ~yearbook.
+
+### Outputs
+- [ ] **Yearbook-style photo book generator** — a year-in-review of key moments & highlights (holidays + fun at home). Decide format/handoff (e.g. export a curated, ordered set + captions to a print service, or to a book-layout tool).
+- [ ] **Per-subject home video reels** — highlight reels of the year's video moments, with selectable subjects (e.g. one for Phoebe, one for Zoe). **Note:** macOS Photos "Memories" + Apple TV already do automated reels well — likely lean on / trigger those rather than building a video editor; spike whether we can drive them programmatically or just curate the input set and let Photos assemble.
