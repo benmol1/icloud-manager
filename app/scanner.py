@@ -14,34 +14,12 @@ from app.models import Asset, MediaType, Source
 
 logger = logging.getLogger(__name__)
 
-try:
-    # Canonical CloudKit field accessors (pyicloud 2.x). Imported defensively
-    # because they live in an internal module that may move between releases.
-    from pyicloud.services.photos_cloudkit.mappers import (
-        decode_encrypted_text,
-        record_change_tag,
-        record_field_value,
-    )
-except Exception:  # pragma: no cover - fallback if the internal path changes
-    def record_field_value(record, field_name):
-        fields = getattr(record, "fields", None)
-        if fields is not None and hasattr(fields, "get_value"):
-            value = fields.get_value(field_name)
-        elif isinstance(record, dict):
-            value = record.get("fields", {}).get(field_name)
-        else:
-            return None
-        if isinstance(value, dict) and "value" in value:
-            return value["value"]
-        return value
-
-    def decode_encrypted_text(record, field_name):  # noqa: D401
-        return None
-
-    def record_change_tag(record):  # noqa: D401
-        if isinstance(record, dict):
-            return record.get("recordChangeTag")
-        return getattr(record, "recordChangeTag", None)
+# Canonical CloudKit field accessors (pyicloud 2.x, pinned in pyproject).
+from pyicloud.services.photos_cloudkit.mappers import (
+    decode_encrypted_text,
+    record_change_tag,
+    record_field_value,
+)
 
 # Matches WhatsApp-exported filenames: IMG-20240101-WA0001.jpg
 _WHATSAPP_FILENAME_RE = re.compile(r"^IMG-\d{8}-WA\d+\.", re.IGNORECASE)

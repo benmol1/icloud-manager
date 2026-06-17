@@ -487,14 +487,15 @@ def _row_to_asset(row: sqlite3.Row) -> Asset:
 # CLI
 # ------------------------------------------------------------------
 
-def _format_bytes(n: int) -> str:
-    gb = n / 1024 / 1024 / 1024
-    return f"{gb:.2f} GB"
+def _human_size(n: int, *, compact: bool = False) -> str:
+    """Human-readable byte size.
 
-
-def _human_size(n: int) -> str:
-    """Compact size for grid cells: ``42.0M`` / ``1.3G``."""
+    Default form is ``x.xx GB`` (summary totals); ``compact=True`` gives the
+    tight ``42.0M`` / ``1.3G`` form used in the breakdown grid cells.
+    """
     mb = n / 1024 / 1024
+    if not compact:
+        return f"{mb / 1024:.2f} GB"
     if mb < 1024:
         return f"{mb:.1f}M"
     return f"{mb / 1024:.1f}G"
@@ -514,7 +515,7 @@ def _print_breakdown(rows: list[dict[str, Any]], status: str | None) -> None:
     year_w, col_w = 6, 16
 
     def cell(files: int, byts: int) -> str:
-        return f"{files} / {_human_size(byts)}" if files else "-"
+        return f"{files} / {_human_size(byts, compact=True)}" if files else "-"
 
     def line(label: str, get) -> str:
         out = f"{label:<{year_w}}"
@@ -548,7 +549,7 @@ def _print_breakdown(rows: list[dict[str, Any]], status: str | None) -> None:
         footer += f"{cell(*col_totals[s]):>{col_w}}"
     footer += f"{cell(total_files, total_bytes):>{col_w}}"
     print(footer)
-    print(f"\n{total_files} files / {_format_bytes(total_bytes)} across "
+    print(f"\n{total_files} files / {_human_size(total_bytes)} across "
           f"{len(years)} years{scope}")
 
 
@@ -581,13 +582,13 @@ def main(argv: list[str] | None = None) -> None:
             for status, agg in sorted(data["by_status"].items()):
                 print(
                     f"  {status:12} {agg['files']:>7} files  "
-                    f"{_format_bytes(agg['bytes'])}"
+                    f"{_human_size(agg['bytes'])}"
                 )
                 if status == "offloaded":
                     for tier, t_agg in sorted(data["by_tier"].items()):
                         print(
                             f"    └ {tier:8} {t_agg['files']:>7} files  "
-                            f"{_format_bytes(t_agg['bytes'])}"
+                            f"{_human_size(t_agg['bytes'])}"
                         )
         elif args.command == "breakdown":
             _print_breakdown(index.breakdown(status=args.status), args.status)

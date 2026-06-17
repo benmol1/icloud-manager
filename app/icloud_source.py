@@ -12,8 +12,8 @@ index). That's O(1) per asset. The old approach — ``photos.all.get(id)`` — l
 like a point lookup but falls back inside pyicloud to linearly scanning the
 *entire* date-sorted library, costing minutes per asset. We keep that iteration
 as a **fallback** for when the direct path can't run (missing ``master_id``, or a
-future pyicloud release moving the internals we depend on), so a breakage
-degrades to "slow but works" rather than failing outright.
+runtime lookup failure), so a breakage degrades to "slow but works" rather than
+failing outright.
 
 ``delete`` performs iCloud's *soft* delete (``isDeleted = 1``), so the asset
 lands in **Recently Deleted** and stays recoverable for ~30 days — a safety net
@@ -28,20 +28,15 @@ from app.models import Asset
 
 logger = logging.getLogger(__name__)
 
-# The direct-lookup fast path uses pyicloud internals. Imported defensively: if a
-# future release moves these, _DIRECT_LOOKUP_AVAILABLE flips False and _resolve
-# silently uses the (slow but stable) public iteration fallback.
-try:
-    from pyicloud.common.cloudkit import CKZoneIDReq
-    from pyicloud.services.photos_cloudkit.constants import PRIMARY_ZONE
-    from pyicloud.services.photos_cloudkit.service import (
-        PHOTO_DESIRED_KEYS,
-        PhotoAsset,
-    )
-
-    _DIRECT_LOOKUP_AVAILABLE = True
-except Exception:  # pragma: no cover - exercised only on pyicloud API drift
-    _DIRECT_LOOKUP_AVAILABLE = False
+# The direct-lookup fast path uses pyicloud internals (pyicloud 2.x, pinned in
+# pyproject). A missing master_id, or a runtime lookup failure, still falls back
+# to the slow-but-stable public iteration path in _resolve.
+from pyicloud.common.cloudkit import CKZoneIDReq
+from pyicloud.services.photos_cloudkit.constants import PRIMARY_ZONE
+from pyicloud.services.photos_cloudkit.service import (
+    PHOTO_DESIRED_KEYS,
+    PhotoAsset,
+)
 
 
 class AssetNotFoundError(RuntimeError):
@@ -98,7 +93,7 @@ class PyiCloudAssetSource:
         Returns ``None`` (so the caller falls back to iteration) when the direct
         path can't run or doesn't find a usable record pair.
         """
-        if not _DIRECT_LOOKUP_AVAILABLE or not asset.master_id:
+        if not asset.master_id:
             return None
 
         try:

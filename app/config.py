@@ -4,13 +4,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _require(key: str) -> str:
-    value = os.getenv(key)
-    if not value:
-        raise EnvironmentError(f"Required environment variable '{key}' is not set")
-    return value
-
-
 def _bool(key: str, default: str) -> bool:
     return os.getenv(key, default).lower() == "true"
 
@@ -26,8 +19,8 @@ class Config:
     """
 
     def __init__(self) -> None:
-        self.icloud_username: str = _require("ICLOUD_USERNAME") if os.getenv("ICLOUD_USERNAME") else ""
-        self.icloud_password: str = _require("ICLOUD_PASSWORD") if os.getenv("ICLOUD_PASSWORD") else ""
+        self.icloud_username: str = os.getenv("ICLOUD_USERNAME", "")
+        self.icloud_password: str = os.getenv("ICLOUD_PASSWORD", "")
 
         self.telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
         self.telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -98,14 +91,19 @@ class Config:
         self.large_file_mb: int = int(os.getenv("LARGE_FILE_MB", "50"))
 
     def validate(self) -> None:
+        """Fail fast on missing configuration the current run actually needs.
+
+        iCloud credentials are always required. The SMB destination is required
+        only for a live offload (``DRY_RUN=false``) — a dry run never writes
+        there. Telegram config isn't checked yet: the notifier isn't wired up.
+        """
         required = {
             "ICLOUD_USERNAME": self.icloud_username,
             "ICLOUD_PASSWORD": self.icloud_password,
-            "TELEGRAM_BOT_TOKEN": self.telegram_bot_token,
-            "TELEGRAM_CHAT_ID": self.telegram_chat_id,
-            "SMB_HOST": self.smb_host,
-            "SMB_SHARE": self.smb_share,
         }
+        if not self.dry_run:
+            required["SMB_HOST"] = self.smb_host
+            required["SMB_SHARE"] = self.smb_share
         missing = [k for k, v in required.items() if not v]
         if missing:
             raise EnvironmentError(f"Missing required environment variables: {', '.join(missing)}")
